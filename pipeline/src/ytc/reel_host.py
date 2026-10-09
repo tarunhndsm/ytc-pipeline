@@ -187,6 +187,8 @@ def prune(store: reel_media.Store, now: datetime) -> list[str]:
 
 
 def _keep_log(store: reel_media.Store, release: str, path: Path) -> None:
+    if not path.is_file() or not path.stat().st_size:
+        return  # GitHub refuses an empty asset (400)
     try:
         store.put(release, path.name, path)
     except Exception as err:

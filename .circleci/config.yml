@@ -50,27 +50,46 @@ jobs:
   reels:
     executor: python
     resource_class: medium
+    # Branches on the parameters themselves: a boolean put in a step's environment didn't reach the shell as "true".
     steps:
       - install
-      - run:
-          name: Judge, book and mirror
-          working_directory: pipeline
-          no_output_timeout: 50m
-          environment:
-            AK_DRY: << pipeline.parameters.dry >>
-          command: .venv/bin/python -m ytc.reel_host reels $([ "$AK_DRY" = true ] && echo --dry)
+      - when:
+          condition: << pipeline.parameters.dry >>
+          steps:
+            - run:
+                name: Say what a reels run would do, changing nothing
+                working_directory: pipeline
+                no_output_timeout: 50m
+                command: .venv/bin/python -m ytc.reel_host reels --dry
+      - unless:
+          condition: << pipeline.parameters.dry >>
+          steps:
+            - run:
+                name: Judge, book and mirror
+                working_directory: pipeline
+                no_output_timeout: 50m
+                command: .venv/bin/python -m ytc.reel_host reels
   factory:
     executor: python
     resource_class: large
     steps:
       - install
-      - run:
-          name: Make a Reel when the calendar runs short
-          working_directory: pipeline
-          no_output_timeout: 55m
-          environment:
-            AK_FORCE: << pipeline.parameters.force >>
-          command: .venv/bin/python -m ytc.reel_host factory --until "$AK_UNTIL" $([ "$AK_FORCE" = true ] && echo --force)
+      - when:
+          condition: << pipeline.parameters.force >>
+          steps:
+            - run:
+                name: Make a Reel, even with the calendar full
+                working_directory: pipeline
+                no_output_timeout: 55m
+                command: .venv/bin/python -m ytc.reel_host factory --until "$AK_UNTIL" --force
+      - unless:
+          condition: << pipeline.parameters.force >>
+          steps:
+            - run:
+                name: Make a Reel when the calendar runs short
+                working_directory: pipeline
+                no_output_timeout: 55m
+                command: .venv/bin/python -m ytc.reel_host factory --until "$AK_UNTIL"
   selftest:
     executor: python
     resource_class: medium
