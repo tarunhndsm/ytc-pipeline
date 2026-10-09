@@ -235,8 +235,8 @@ def reels(dry: bool = False) -> dict:
         log.exception("updating the public copy failed")
         done.setdefault("errors", []).append(f"couldn't update the public copy CircleCI runs from: {err}"[:300])
     memory = _read(cloud.CHECKOUT / ALERTS)
-    reel_cloud._tell_owner(code, done, memory, "CircleCI", 'app.circleci.com > ytc-pipeline, and the "reels logs" '
-                           "draft release in days-of-odd")
+    reel_cloud._tell_owner(code, done, memory, "CircleCI",
+                           f'app.circleci.com > ytc-pipeline, and the "reels logs" draft release in {reel_media.REPO}')
     _write(cloud.CHECKOUT / ALERTS, memory)
     try:
         done["saved"] = cloud._save(reel_cloud._message(started, done, "CircleCI"))
