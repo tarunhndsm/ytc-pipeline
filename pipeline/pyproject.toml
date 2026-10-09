@@ -1,0 +1,42 @@
+[project]
+name = "ytc"
+version = "0.1.0"
+description = "Script-to-Short production pipeline for the channel"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "cursor-sdk>=1.0.32",
+    "ddgs>=9.16",
+    "en-core-web-sm",
+    "faster-whisper>=1.1",
+    "fonttools>=4.66.0",
+    "google-api-python-client>=2.200.0",
+    "google-auth-oauthlib>=1.4.1",
+    "imageio-ffmpeg>=0.6.0",
+    "kokoro>=0.9.4",
+    "modal>=1.5.5",
+    "pillow>=12.3.0",
+    "pydantic>=2.13.5",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+    "soundfile>=0.14.0",
+    # Kokoro's dependency, listed so Linux (GitHub Actions, Modal) gets the CPU build without 3 GB of CUDA.
+    "torch>=2.14",
+    "trafilatura>=2.0",
+    "transformers>=5.17",
+]
+
+[project.scripts]
+ytc = "ytc:main"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

@@ -1,0 +1,101 @@
+version: 2.1
+
+# @ankahi.kathayein's Reels (pipeline/src/ytc/reel_host.py). The project's two schedules set `run`: "reels" at 15
+# past every hour, "factory" at 40 past. A push (the copy from the private repo) runs nothing.
+
+parameters:
+  run:
+    type: enum
+    enum: [none, reels, factory, selftest]
+    default: none
+  dry:
+    type: boolean
+    default: false
+  force:
+    type: boolean
+    default: false
+
+executors:
+  python:
+    docker:
+      - image: cimg/python:3.12
+    environment:
+      HF_HOME: /home/circleci/.cache/huggingface
+      PYTHONUNBUFFERED: "1"
+
+commands:
+  install:
+    steps:
+      - run:
+          name: Note when the job has to be done
+          # The free plan stops a job at one hour; the factory starts no step it can't finish by AK_UNTIL.
+          command: echo "export AK_UNTIL=$(date -u -d '+50 minutes' +%Y-%m-%dT%H:%M:%S+00:00)" >> "$BASH_ENV"
+      - checkout
+      - run: python3 --version > /tmp/python-version
+      - restore_cache:
+          keys:
+            - venv-v1-{{ checksum "/tmp/python-version" }}-{{ checksum "pipeline/uv.lock" }}
+      - run:
+          name: Install
+          working_directory: pipeline
+          command: |
+            python3 -m pip install --quiet "uv>=0.9,<0.10"
+            python3 -m uv sync --frozen
+      - save_cache:
+          key: venv-v1-{{ checksum "/tmp/python-version" }}-{{ checksum "pipeline/uv.lock" }}
+          paths:
+            - pipeline/.venv
+
+jobs:
+  reels:
+    executor: python
+    resource_class: medium
+    steps:
+      - install
+      - run:
+          name: Judge, book and mirror
+          working_directory: pipeline
+          no_output_timeout: 50m
+          environment:
+            AK_DRY: << pipeline.parameters.dry >>
+          command: .venv/bin/python -m ytc.reel_host reels $([ "$AK_DRY" = true ] && echo --dry)
+  factory:
+    executor: python
+    resource_class: large
+    steps:
+      - install
+      - run:
+          name: Make a Reel when the calendar runs short
+          working_directory: pipeline
+          no_output_timeout: 55m
+          environment:
+            AK_FORCE: << pipeline.parameters.force >>
+          command: .venv/bin/python -m ytc.reel_host factory --until "$AK_UNTIL" $([ "$AK_FORCE" = true ] && echo --force)
+  selftest:
+    executor: python
+    resource_class: medium
+    steps:
+      - install
+      - run:
+          name: Check the keys, the clone, the releases and ffmpeg
+          working_directory: pipeline
+          command: .venv/bin/python -m ytc.reel_host selftest
+
+workflows:
+  reels:
+    when:
+      equal: [reels, << pipeline.parameters.run >>]
+    jobs:
+      - reels:
+          serial-group: ytc-pipeline/reels
+  factory:
+    when:
+      equal: [factory, << pipeline.parameters.run >>]
+    jobs:
+      - factory:
+          serial-group: ytc-pipeline/factory
+  selftest:
+    when:
+      equal: [selftest, << pipeline.parameters.run >>]
+    jobs:
+      - selftest
