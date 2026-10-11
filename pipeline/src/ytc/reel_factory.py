@@ -96,8 +96,8 @@ def _judged_and_failed(folder: Path) -> bool:
 def _faulted(folder: Path) -> list[str]:
     """The pictures the judge found fault with in a Reel, not counting its complaints about a picture shown again."""
     review, chosen = _read(folder / reels.REVIEW) or {}, _read(folder / reel_pictures.PICTURES) or {}
-    return sorted({chosen[str(f["beat"])]["ref"] for f in review.get("frames") or []
-                   if str(f.get("beat")) in chosen and not SHOWN_AGAIN.search(f.get("problem", ""))})
+    return sorted({ref for f in review.get("frames") or [] if not SHOWN_AGAIN.search(str(f.get("problem", "")))
+                   and (ref := (chosen.get(str(f.get("beat"))) or {}).get("ref"))})
 
 
 def _pictures_failed(folder: Path, mine: dict) -> bool:
@@ -107,11 +107,14 @@ def _pictures_failed(folder: Path, mine: dict) -> bool:
     review = _read(folder / reels.REVIEW)
     if mine.get("redo") or not review or (review.get("check") or {}).get("warnings") or not _judged_and_failed(folder):
         return False
-    if [k for k in reels.GATE if reels.score(review["scores"], k) < reels.PASS_SCORE] != ["visuals"]:
+    try:
+        if [k for k in reels.GATE if reels.score(review["scores"], k) < reels.PASS_SCORE] != ["visuals"]:
+            return False
+    except (KeyError, TypeError):
         return False
     beats = ((_read(folder / reel_writer.SCRIPT) or {}).get("script") or {}).get("beats") or []
     # The last line always shows line 1's picture again.
-    return len(beats) - 1 - len(_read(folder / reel_pictures.PICTURES) or {}) <= reel_pictures.MAX_REUSED
+    return bool(beats) and len(beats) - 1 - len(_read(folder / reel_pictures.PICTURES) or {}) <= reel_pictures.MAX_REUSED
 
 
 def send_back(reel: str, state: dict) -> list[str]:
@@ -390,7 +393,14 @@ def work(state_path: Path, logs: Path, force: bool = False, media: Path | None =
     if reel:
         done["reel"] = reel
         if done["decision"] == "picturing again":
-            done["sent_back"] = {"left_out": send_back(reel, state)}
+            try:
+                done["sent_back"] = {"left_out": send_back(reel, state)}
+            except Exception as err:
+                # Never sent back again, or every run would stop at the same Reel; the next run starts a story.
+                state["reels"].setdefault(reel, {})["redo"] = {"failed": f"{type(err).__name__}: {err}"[:300]}
+                done["result"], done["why"] = "not sent back", state["reels"][reel]["redo"]["failed"]
+                state_path.write_text(json.dumps(state, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+                return done
         done["result"] = make(reel, state, logs, done, until)
         done["story"] = state["reels"].get(reel, {}).get("story", "")
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
