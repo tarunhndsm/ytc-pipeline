@@ -54,6 +54,8 @@ _OPEN = ("public domain", "cc0", "pd")
 # weren't used or set aside, with the fields to frame and credit them.
 PICTURES = "work/pictures.json"
 SPARES = "work/spares.json"
+# A Reel the judge failed on its pictures (reel_factory.send_back): the pictures it found fault with, never chosen again.
+AVOID = "work/avoid.json"
 HIT_KEYS = ("ref", "title", "date", "url", "page", "thumb", "source", "license", "artist", "width", "height")
 FRAMED_KEYS = ("size", "subject", "faces", "kind", "hindi")
 MET_GAP = 1.0
@@ -533,6 +535,10 @@ def picture(folder: Path) -> Path:
     beats = draft["script"]["beats"]
     story = f"{draft['row']['story']} ({draft['row']['source']})"
     per_line = candidates(beats)
+    if (folder / AVOID).exists():
+        avoid = set(json.loads((folder / AVOID).read_text(encoding="utf-8"))["refs"])
+        per_line = {n: [h for h in hits if h["ref"] not in avoid] for n, hits in per_line.items()}
+        log.info("left out %d pictures the judge found fault with", len(avoid))
     log.info("%d candidates for %d lines", len({h["ref"] for hits in per_line.values() for h in hits}), len(per_line))
     shown = shortlist(beats, per_line)
     log.info("shortlisted %d pictures", sum(map(len, shown.values())))

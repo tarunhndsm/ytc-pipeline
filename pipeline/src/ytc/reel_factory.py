@@ -12,6 +12,8 @@ folder, and the hourly reel_run judges and books it. These steps and the judge s
 Gemini outage or a network drop, until it has happened TRANSIENT_GIVE_UP times to the same step. A step that fails
 GIVE_UP times for any other reason sets the Reel aside, and so does one pictures failure that leaves most lines
 without art although the searches found plenty (_no_art); a story the writer can't write moves to "## Set aside".
+Before it starts a new story, a Reel the judge failed on its pictures alone goes back to the picture step once
+(send_back), without the pictures the judge found fault with.
 With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run. When
 BACKLOG_LOW or fewer stories the writer can read are left, reel_backlog adds new ones that check out.
 
@@ -38,7 +40,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import reel_writer, reels
+from . import reel_pictures, reel_writer, reels
 
 IST = ZoneInfo("Asia/Kolkata")
 PENDING_MIN = 3
@@ -56,6 +58,10 @@ TRANSIENT = re.compile(r"Overloaded|\b503\b|UNAVAILABLE|high demand|Read timed o
                        r"Temporary failure in name resolution|SSLError", re.I)
 NO_PICTURES = re.compile(r"no usable picture for lines \[([\d, ]+)\]")
 SEARCHED = re.compile(r"(\d+) candidates for (\d+) lines")
+# A judge's complaint about a picture shown again, which the picture step's rules settle, not about the picture itself.
+SHOWN_AGAIN = re.compile(r"same (image|picture)|repeat|repetit|again|reuse|consecutive", re.I)
+# Where a Reel sent back to the picture step keeps its old picks, QA, render and review, out of git.
+REDO = "work/redo"
 PAUSE = reels.REELS / "FACTORY_PAUSE"
 BACKLOG = reels.REELS / "backlog.md"
 RECORD = "instagram.json"
@@ -85,6 +91,49 @@ def _judged_and_failed(folder: Path) -> bool:
         return not reels.passes(review, folder.name, with_bar=False)
     except Exception:
         return False
+
+
+def _faulted(folder: Path) -> list[str]:
+    """The pictures the judge found fault with in a Reel, not counting its complaints about a picture shown again."""
+    review, chosen = _read(folder / reels.REVIEW) or {}, _read(folder / reel_pictures.PICTURES) or {}
+    return sorted({chosen[str(f["beat"])]["ref"] for f in review.get("frames") or []
+                   if str(f.get("beat")) in chosen and not SHOWN_AGAIN.search(f.get("problem", ""))})
+
+
+def _pictures_failed(folder: Path, mine: dict) -> bool:
+    """Whether the judge failed a Reel on its pictures alone, every other score passing, and it hasn't been sent back
+    to the picture step before. A Reel that had more lines without a picture of their own than the picture step now
+    allows (ak041, made while it allowed 4) would only fail there."""
+    review = _read(folder / reels.REVIEW)
+    if mine.get("redo") or not review or (review.get("check") or {}).get("warnings") or not _judged_and_failed(folder):
+        return False
+    if [k for k in reels.GATE if reels.score(review["scores"], k) < reels.PASS_SCORE] != ["visuals"]:
+        return False
+    beats = ((_read(folder / reel_writer.SCRIPT) or {}).get("script") or {}).get("beats") or []
+    # The last line always shows line 1's picture again.
+    return len(beats) - 1 - len(_read(folder / reel_pictures.PICTURES) or {}) <= reel_pictures.MAX_REUSED
+
+
+def send_back(reel: str, state: dict) -> list[str]:
+    """Send a Reel the judge failed on its pictures alone back to the picture step, once; the pictures left out.
+
+    Its picks, QA, render and review move to REDO, out of git, so neither run takes the old render for this Reel, and
+    avoid.json keeps the review and the pictures it found fault with, which the picture step leaves out."""
+    folder = reels.REELS / reel
+    review, refs = _read(folder / reels.REVIEW), _faulted(folder)
+    (folder / REDO).mkdir(parents=True, exist_ok=True)
+    for name in ("short.yaml", f"{reel}.mp4", reel_pictures.PICTURES, reel_pictures.SPARES, "work/qa.json",
+                 "work/manifest.json", reels.REVIEW):
+        if (folder / name).exists():
+            shutil.move(folder / name, folder / REDO / Path(name).name)
+    (folder / reel_pictures.AVOID).write_text(json.dumps({"refs": refs, "review": review}, ensure_ascii=False, indent=1)
+                                              + "\n", encoding="utf-8")
+    mine = state["reels"].setdefault(reel, {})
+    mine.pop("pushed", None)
+    mine.update(fails={}, transient={}, redo={"at": datetime.now(IST).isoformat(timespec="seconds"),
+                                             "visuals": review["scores"]["visuals"], "left_out": refs})
+    mine.setdefault("story", ((_read(folder / reel_writer.SCRIPT) or {}).get("row") or {}).get("story", ""))
+    return refs
 
 
 def supply(state: dict, now: datetime, media: Path | None = None, stored: set[str] | None = None) -> dict:
@@ -295,6 +344,10 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
         return None, done | {"decision": f"already made {DAILY_CAP} today"}
     if found["unfinished"]:
         return found["unfinished"][0], done | {"decision": "resuming"}
+    # New pictures cost less than a new story, and the rest of the Reel already passed.
+    for reel in found["failed"]:
+        if _pictures_failed(reels.REELS / reel, state["reels"].get(reel, {})):
+            return reel, done | {"decision": "picturing again"}
     if not reel_writer.next_story():
         done["alerts"].append(("backlog", "the backlog has no story the writer can read; no Reel made"))
         return None, done | {"decision": "no readable story"}
@@ -336,6 +389,8 @@ def work(state_path: Path, logs: Path, force: bool = False, media: Path | None =
         done["refilled"] = refilled
     if reel:
         done["reel"] = reel
+        if done["decision"] == "picturing again":
+            done["sent_back"] = {"left_out": send_back(reel, state)}
         done["result"] = make(reel, state, logs, done, until)
         done["story"] = state["reels"].get(reel, {}).get("story", "")
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

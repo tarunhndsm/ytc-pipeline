@@ -334,6 +334,9 @@ def factory(force: bool = False, until: datetime | None = None) -> dict:
     reel, result = done.get("reel"), done.get("result")
     # The source pages a run read are kept for the next, which may be refused them.
     paths = [FACTORY, SOURCES] + ([BACKLOG] if done.get("refilled") else [])
+    if "sent_back" in done:
+        # Its old render's manifest and review leave git now: the reels run would otherwise take that render again.
+        paths.append(f"content/instagram/{reel}")
     message = f"Reel factory on CircleCI: {reel} {result}" + (f" ({done['why']})" if done.get("why") else "") \
         if reel else "Reel factory on CircleCI: state"
     if reel and result == "made":
