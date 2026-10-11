@@ -18,10 +18,14 @@ The same project runs the owner's news desk (pipeline/src/ytc/news, which only t
 cycle, with the desk's state kept between runs as a tar in the NEWS_RELEASE draft release. Its keys come from the
 "news-desk" context, which only that job gets; Ankahi's keys stay out of its environment (NEWS_HIDE).
 
+It also runs Days of Odd's watchdog (monitor/monitor.py on the clone): `watchdog`, every 3 hours, pushes the studio's
+new alerts and a morning summary to the owner's phone, with only the keys of the "days-of-odd" context (WATCH_KEYS).
+
     python -m ytc.reel_host reels [--dry]
     python -m ytc.reel_host factory [--force] [--until ISO]
     python -m ytc.reel_host selftest                          # the keys, the clone, the releases and ffmpeg
     python -m ytc.reel_host news [--dry] [--test]             # a news desk cycle; --test renders a kept Short
+    python -m ytc.reel_host watchdog                          # Days of Odd's monitor, alerting the owner's phone
     python -m ytc.reel_host upload content/instagram/ak011    # from the Mac: a render (or its youtube/ cut)
     python -m ytc.reel_host publish                           # from the Mac: the public copy, now
     python -m ytc.reel_host news-seed                         # from the Mac: keep the Mac's news desk state
@@ -75,6 +79,12 @@ NEWS_KEEP = ("state/local.json", "state/voice.json", "state/cycles.jsonl", "stat
 NEWS_STATES = 3
 NEWS_MINUTES = 50
 NEWS_HIDE = ("IG_", "AK_", "YTC_DEPLOY_KEY", "YTC_CONTACT", "CIRCLECI_TOKEN")
+WATCH_KEYS = ("BUFFER_API_KEY", "BUFFER_YOUTUBE_CHANNEL_ID", "CLOUDINARY_URL", "YTC_NTFY_TOPIC")
+# What the watchdog has already sent; .circleci/config.yml's watchdog job caches this folder between runs.
+WATCH_OUT = Path.home() / "watchdog"
+# The monitor's report names the owner's accounts, so it goes here instead of CircleCI's public log.
+WATCH_RELEASE = "watchdog logs"
+WATCH_MINUTES = 15
 
 
 def _read(path: Path) -> dict:
@@ -528,6 +538,52 @@ def news_test_upload(folder: Path, store: reel_media.Store) -> str:
     return packed.name
 
 
+# --- Days of Odd's watchdog --------------------------------------------------------------------------------------
+
+def _watch_alert(message: str) -> None:
+    """Push to the owner's phone at most once a day: a watchdog that can't run would otherwise say so every 3 hours."""
+    path, today = WATCH_OUT / "alerted.json", datetime.now(timezone.utc).date().isoformat()
+    if not (topic := os.environ.get("YTC_NTFY_TOPIC")) or _read(path).get("date") == today:
+        return
+    try:
+        requests.post(f"https://ntfy.sh/{topic}", data=message[:900].encode("utf-8"), timeout=30,
+                      headers={"Title": "Days of Odd's watchdog needs attention", "Priority": "high", "Tags": "warning"})
+    except requests.RequestException as err:
+        log.warning("ntfy push failed: %s", err)
+        return
+    _write(path, {"date": today})
+
+
+def watchdog() -> dict:
+    """monitor/monitor.py on the clone: it sees only WATCH_KEYS, keeps what it sent in WATCH_OUT, and its report goes
+    to the WATCH_RELEASE draft release. The public log gets the counts."""
+    try:
+        _started(prepare)
+    except Exception as err:
+        _watch_alert(f"Days of Odd's watchdog on CircleCI couldn't clone the repo, so nothing watches the studio: {err}")
+        raise
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "CIRCLECI", *WATCH_KEYS) if os.environ.get(k)}
+    report = LOGS / "watchdog.log"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    WATCH_OUT.mkdir(parents=True, exist_ok=True)
+    with report.open("w") as out:
+        try:
+            code = subprocess.run([sys.executable, str(cloud.CHECKOUT / "monitor" / "monitor.py")], stdout=out,
+                                  stderr=subprocess.STDOUT, timeout=WATCH_MINUTES * 60,
+                                  env=env | {"MONITOR_OUT": str(WATCH_OUT), "PYTHONUTF8": "1"}).returncode
+        except subprocess.TimeoutExpired:
+            code = 124
+    _keep_log(reel_media.Store(), WATCH_RELEASE, report)
+    last = _read(WATCH_OUT / "last.json")
+    levels = [level for level, _ in last.get("problems", [])]
+    done = {"exit": code, "checked_at": last.get("checked_at"), "alerts": levels.count("alert"),
+            "warnings": levels.count("warn"), "summary_sent": _read(WATCH_OUT / "digest.json").get("date")}
+    if code:
+        _watch_alert(f"Days of Odd's watchdog on CircleCI stopped with exit code {code}; its report is in the "
+                     f'"{WATCH_RELEASE}" draft release of {reel_media.REPO}.')
+    return done
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m ytc.reel_host", description="@ankahi.kathayein's Reels on CircleCI")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -540,6 +596,7 @@ def main() -> None:
     desk = commands.add_parser("news", help="one cycle of the news desk")
     desk.add_argument("--dry", action="store_true", help="post nothing and keep no state")
     desk.add_argument("--test", action="store_true", help="render the kept test Short instead, with no Gemini call")
+    commands.add_parser("watchdog", help="Days of Odd's monitor, alerting the owner's phone")
     commands.add_parser("upload", help="from the Mac: put rendered Reels' media in the releases").add_argument(
         "folders", type=Path, nargs="+")
     commands.add_parser("publish", help="from the Mac: bring the public copy up to this checkout's last commit")
@@ -575,6 +632,8 @@ def main() -> None:
         result = factory(args.force, args.until)
     elif args.command == "news":
         result = news_test() if args.test else news(args.dry)
+    elif args.command == "watchdog":
+        result = watchdog()
     else:
         result = selftest()
     print(json.dumps(result, indent=1, ensure_ascii=False))

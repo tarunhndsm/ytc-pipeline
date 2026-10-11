@@ -2,12 +2,13 @@ version: 2.1
 
 # @ankahi.kathayein's Reels (pipeline/src/ytc/reel_host.py). The project's two schedules set `run`: "reels" at 15
 # past every hour, "factory" at 40 past. A third, "news", runs a cycle of the owner's news desk every quarter of an
-# hour, with the keys of the "news-desk" context. A push (the copy from the private repo) runs nothing.
+# hour, with the keys of the "news-desk" context. A fourth, "watchdog", checks Days of Odd's studio every 3 hours,
+# with the keys of the "days-of-odd" context. A push (the copy from the private repo) runs nothing.
 
 parameters:
   run:
     type: enum
-    enum: [none, reels, factory, selftest, news, newstest]
+    enum: [none, reels, factory, selftest, news, newstest, watchdog]
     default: none
   dry:
     type: boolean
@@ -138,6 +139,25 @@ jobs:
           working_directory: pipeline
           no_output_timeout: 55m
           command: .venv/bin/python -m ytc.reel_host news --test
+  watchdog:
+    executor: python
+    resource_class: small
+    steps:
+      - install
+      - restore_cache:
+          keys:
+            - watchdog-v1-
+      - run:
+          name: Check Days of Odd's studio and tell the owner's phone what's new
+          working_directory: pipeline
+          no_output_timeout: 20m
+          command: .venv/bin/python -m ytc.reel_host watchdog
+      # reel_host.WATCH_OUT: the alerts and the summary already sent, so the next check doesn't send them again.
+      - save_cache:
+          key: watchdog-v1-{{ epoch }}
+          paths:
+            - ~/watchdog
+          when: always
 
 workflows:
   reels:
@@ -170,3 +190,10 @@ workflows:
     jobs:
       - newstest:
           context: news-desk
+  watchdog:
+    when:
+      equal: [watchdog, << pipeline.parameters.run >>]
+    jobs:
+      - watchdog:
+          context: days-of-odd
+          serial-group: ytc-pipeline/watchdog
