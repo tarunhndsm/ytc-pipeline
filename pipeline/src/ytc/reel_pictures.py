@@ -83,12 +83,16 @@ pictures. Line 1's picture is the Reel's first frame in the feed, where viewers 
 rank first the most vivid, colourful painting of the figure line 1 names, clear at phone size (Ravana's ten heads in
 orange and gold drew 65,000 plays); Reels that opened on a grey sculpture, a flower or a snake lost most viewers at
 once. Never: a photograph of the world today (a river, an animal, an object, a building, people), which looks out
-of place among the paintings (a photograph of a painting, carving or sculpture counts as that art); nudity, gore, a
-large watermark, a page of text, art from outside South Asia (Greek, Roman, European, or a European artist's view of
-India, such as a British watercolour of a ghat), a deity standing in for a person or a person for a deity (Vishnu is
-never a sage), a figure of another faith standing in for the story's (a Jain monk for a rishi, a Tibetan Buddhist
-Yama for the Yama of the Upanishads), or a named deity, person or story other than the one the line is about. Leave
-the list empty when nothing qualifies.
+of place among the paintings (a photograph of a painting, carving or sculpture counts as that art); nudity (bare
+breasts count, as temple sculpture and some paintings show them: Instagram hides such Reels), gore, a large
+watermark, a page of text, writing in Persian or Arabic script (Mughal manuscripts of the epics, such as the
+Razmnama, carry it), art from outside South Asia (Greek, Roman, European, or a European artist's view of India, such
+as a British watercolour of a ghat), a deity standing in for a person or a person for a deity (Vishnu is never a
+sage), a figure of another faith standing in for the story's (a Jain monk for a rishi, a Tibetan Buddhist Yama for
+the Yama of the Upanishads), a named deity, person or story other than the one the line is about, or a figure who
+hasn't entered the story yet at that line (Hanuman beside Rama before they meet). Judges failed Reels for each of
+these. Where two candidates are close, keep the Reel to one kind of art (miniatures, or later realistic paintings)
+rather than a mix. Leave the list empty when nothing qualifies.
 
 The story: {story}
 """
@@ -110,7 +114,8 @@ FRAME_SCHEMA = {
 FRAME_PROMPT = """Each picture below was chosen for a line of a Reel of stories from the Ramayana, the Mahabharata and
 the Puranas, told in Hindi. For each one:
 - ok: false only for a clear problem: a photograph of the world today rather than of a painting, carving or
-  sculpture, nudity, gore, a large watermark or text across it, too damaged or blurry to make out, art from outside
+  sculpture, nudity (bare breasts count, in sculpture too), gore, a large watermark or text across it, writing in
+  Persian or Arabic script anywhere on it, too damaged or blurry to make out, art from outside
   South Asia (a European artist's view of India counts), a deity shown for a person or a person for a deity, a figure
   of another faith shown for the story's (a Jain monk for a rishi, a Tibetan Buddhist Yama), or it names or shows a
   different deity, person or story than the line is about. Otherwise true.

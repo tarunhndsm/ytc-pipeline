@@ -76,8 +76,8 @@ def prepare() -> None:
 
 def publish(source: Path, token: str) -> str:
     """Make the public repo the committed pipeline/ and .circleci/ of `source` (a checkout of this repo), without the
-    news desk, with README.md from pipeline/. Pushed with AK_MEDIA_TOKEN, sent as a header (as actions/checkout does)
-    so it shows in no URL, argument or error."""
+    news desk, with README.md from pipeline/ and docs/ from pipeline/pages/. Pushed with AK_MEDIA_TOKEN, sent as a
+    header (as actions/checkout does) so it shows in no URL, argument or error."""
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     # Without the global config: CircleCI's checkout rewrites GitHub's https URLs to SSH, with a key for another repo.
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
