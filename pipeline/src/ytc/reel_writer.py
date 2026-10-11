@@ -154,7 +154,8 @@ Instagram carries a Reel, so make it one people want to answer:
 - question: in Hindi, {question_min} to {question_max} words, ending with "?": a fact from this story's source text
   that your narration doesn't give, so viewers who know the story can answer and the rest want to know. A name, a
   number, a place or an object, answered in a word or two, like "राजा अश्वपति ने संतान के लिए कितने साल तप किया
-  था?" Not a trick, not about death, violence or caste, and not about this Reel's own revelation.
+  था?" Not a trick, not about death, violence or caste, and not about this Reel's own revelation. Ask only what the
+  evidence says, as it says it: the same person or people doing it, and the same way (given "in his mind", say so).
 - answer: the answer in Hindi, {answer_min} to {answer_max} words, numbers as words, like "अठारह साल".
 - accepted: the ways a right answer may be written in the comments, in Devanagari and in Latin letters, with
   common spellings and digits, like ["अठारह", "18", "atharah", "eighteen"].
@@ -510,7 +511,8 @@ def _series(part: dict | None, reel_id: str) -> str:
         return ""
     number, of = part["number"], part["of"]
     text = [f"\nThis Reel is part {number} of {of} of one story, \"{part['series']}\", told over {of} Reels one "
-            f"after another; its title and first frame say \"भाग {number}\". Tell only what this part's source "
+            f"after another; the page adds \"भाग {number}\" to its title and first frame, so leave the part out of "
+            "your title and hook_text. Tell only what this part's source "
             "tells, as a whole episode with its own hook and payoff."]
     if number > 1 and (told := part_told(part, reel_id)):
         text.append(f"Part {number - 1}, which went out just before, told:\n" + "\n".join(told) +
@@ -616,7 +618,9 @@ def spec_fields(draft: dict) -> dict:
     style["voice"]["direction"] = DIRECTION.format(text=text, tones=tones)
     title, hook_text = script["title"], script["hook_text"]
     if part:
-        title, hook_text = f"{title} | भाग {part['number']}", f"भाग {part['number']} • {hook_text}"
+        named = f"भाग {part['number']}"
+        title = title if named in title else f"{title} | {named}"
+        hook_text = hook_text if named in hook_text else f"{named} • {hook_text}"
     fields = {"id": draft["id"], "title": title, "series": style.pop("series"),
               "description": f"{script['summary'].strip()}\n{script['teaser'].strip()}\n\nस्रोत: {script['source_line'].strip()}",
               "hook_text": hook_text, "sources": draft["sources"],
