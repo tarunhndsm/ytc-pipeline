@@ -10,7 +10,8 @@ lets QA fix the frames, and reports the Reel as made; the run then puts the rend
 folder, and the hourly reel_run judges and books it. These steps and the judge share the brand's daily Gemini quota
 (reset 12:30 IST), so a quota error pauses the factory until then instead of counting as a failure, and so does a
 Gemini outage or a network drop, until it has happened TRANSIENT_GIVE_UP times to the same step. A step that fails
-GIVE_UP times for any other reason sets the Reel aside; a story the writer can't write moves to "## Set aside".
+GIVE_UP times for any other reason sets the Reel aside, and so does one pictures failure that leaves most lines
+without art although the searches found plenty (_no_art); a story the writer can't write moves to "## Set aside".
 With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run. When
 BACKLOG_LOW or fewer stories the writer can read are left, reel_backlog adds new ones that check out.
 
@@ -53,6 +54,8 @@ QUOTA = re.compile(r"OutOfQuota|free quota left today|RESOURCE_EXHAUSTED", re.I)
 TRANSIENT = re.compile(r"Overloaded|\b503\b|UNAVAILABLE|high demand|Read timed out|TimeoutError|NameResolution|"
                        r"ClientConnector|ConnectionError|Connection reset|RemoteDisconnected|"
                        r"Temporary failure in name resolution|SSLError", re.I)
+NO_PICTURES = re.compile(r"no usable picture for lines \[([\d, ]+)\]")
+SEARCHED = re.compile(r"(\d+) candidates for (\d+) lines")
 PAUSE = reels.REELS / "FACTORY_PAUSE"
 BACKLOG = reels.REELS / "backlog.md"
 RECORD = "instagram.json"
@@ -238,6 +241,8 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             done["why"] = f"{step} hit an outage or network error ({transient[step]} of {TRANSIENT_GIVE_UP}): {last}"
             return "failed"
         mine["fails"][step] = mine["fails"].get(step, 0) + 1
+        if step == "pictures" and _no_art(failed_log.read_text(encoding="utf-8", errors="replace"), last):
+            mine["fails"][step] = GIVE_UP
         done["why"] = f"{step} failed ({mine['fails'][step]} of {GIVE_UP}): {last}"
         if mine["fails"][step] < GIVE_UP:
             return "failed"
@@ -249,6 +254,16 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
         # No alert: the next run starts the next story, and the owner hears only if the calendar runs dry.
         return "set aside"
     return "made"
+
+
+def _no_art(log_text: str, last: str) -> bool:
+    """Whether a pictures failure left most lines without a picture although the searches found plenty: the
+    collections have no art for the story, and another try finds the same (Savitri: 8 of 13 lines, four tries)."""
+    missing, searched = NO_PICTURES.search(last), SEARCHED.search(log_text)
+    if not missing or not searched:
+        return False
+    candidates, lines = int(searched[1]), int(searched[2])
+    return candidates >= 5 * lines and len(missing[1].split(",")) > lines / 2
 
 
 def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
