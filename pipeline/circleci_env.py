@@ -1,16 +1,22 @@
 """Set up, from the Mac, what @ankahi.kathayein's runs on CircleCI (ytc.reel_host) need. Prints no secret values.
 
     python3 pipeline/circleci_env.py      # needs a CircleCI personal API token on a CIRCLECI_TOKEN line in pipeline/.env
+    python3 pipeline/circleci_env.py watchdog     # only the third
 
 1. A deploy key that can push to this repo and nothing else (secrets/circleci_deploy_key, git-ignored), apart from the
    studio's Modal key, so CircleCI's access can be revoked alone.
 2. The CircleCI project's environment variables: the brand's keys in pipeline/.env (modal_secret.BRAND_ENV), the token
    for the renders' repo and the public copy (AK_MEDIA_TOKEN, a fine-grained token of the owner's personal account),
    the brand YouTube channel's sign-in and the deploy key.
+3. Days of Odd's watchdog (reel_host's `watchdog`): Days of Odd's own keys in the WATCH_CONTEXT context, which only
+   that job gets, and its schedule, every 3 hours.
 """
+
+from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 
@@ -20,6 +26,9 @@ KEY = ROOT / "secrets" / "circleci_deploy_key"
 PROJECT = os.environ.get("AK_CIRCLECI_PROJECT", "gh/tarunhndsm/ytc-pipeline")
 API = "https://circleci.com/api/v2"
 WANTED = (*BRAND_ENV, "AK_MEDIA_TOKEN", "IG_YOUTUBE_TOKEN", "YTC_DEPLOY_KEY")
+WATCH_CONTEXT = "days-of-odd"
+WATCH_KEYS = ("BUFFER_API_KEY", "BUFFER_YOUTUBE_CHANNEL_ID", "CLOUDINARY_URL", "YTC_NTFY_TOPIC")  # reel_host.WATCH_KEYS
+WATCH_SCHEDULE = "days of odd watchdog"
 
 
 def deploy_key() -> None:
@@ -53,6 +62,37 @@ def variables() -> None:
     print(f"CircleCI {PROJECT}: {', '.join(sorted(payload))}" + (f" (missing: {', '.join(missing)})" if missing else ""))
 
 
+def _call(method: str, path: str, token: str, body: dict | None = None):
+    request = urllib.request.Request(f"{API}/{path}", method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Circle-Token": token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read() or b"null")
+    except urllib.error.HTTPError as err:
+        raise SystemExit(f"{method} {path} failed: HTTP {err.code}")
+
+
+def watchdog() -> None:
+    values = env_values()
+    token = values["CIRCLECI_TOKEN"]
+    org = _call("GET", f"project/{PROJECT}", token)["organization_id"]
+    contexts = _call("GET", f"context?owner-id={org}&owner-type=organization", token)["items"]
+    context = next((c for c in contexts if c["name"] == WATCH_CONTEXT), None) or _call(
+        "POST", "context", token, {"name": WATCH_CONTEXT, "owner": {"id": org, "type": "organization"}})
+    for key in WATCH_KEYS:
+        _call("PUT", f"context/{context['id']}/environment-variable/{key}", token, {"value": values[key]})
+    if not any(s["name"] == WATCH_SCHEDULE for s in _call("GET", f"project/{PROJECT}/schedule", token)["items"]):
+        _call("POST", f"project/{PROJECT}/schedule", token, {
+            "name": WATCH_SCHEDULE, "description": "Days of Odd's monitor every 3 hours (ytc.reel_host watchdog)",
+            "attribution-actor": "system", "parameters": {"branch": "main", "run": "watchdog"},
+            "timetable": {"per-hour": 1, "hours-of-day": list(range(0, 24, 3)),
+                          "days-of-week": ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]}})
+    print(f"CircleCI context {WATCH_CONTEXT}: {', '.join(WATCH_KEYS)}; schedule \"{WATCH_SCHEDULE}\", every 3 hours")
+
+
 if __name__ == "__main__":
-    deploy_key()
-    variables()
+    if sys.argv[1:] != ["watchdog"]:
+        deploy_key()
+        variables()
+    watchdog()
