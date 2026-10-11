@@ -459,7 +459,9 @@ def news(dry: bool = False) -> dict:
     code, _ = _step(command, _news_env(), LOGS / "news.log", NEWS_MINUTES * 60)
     done = {"brought": brought, "exit": code, "cycle": _last_cycle(folder / "state" / "cycles.jsonl", started)}
     _keep_log(store, "news logs", LOGS / "news.log")
-    if not dry:
+    if dry:
+        _keep_log(store, "news logs", folder / "state" / "run.log")
+    else:
         try:
             done["kept"] = keep_news(store, folder)
         except Exception as err:
