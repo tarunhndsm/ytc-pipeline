@@ -674,9 +674,13 @@ def _clone() -> None:
         raise RuntimeError(f"couldn't clone the repo: {done.stderr.strip()[:400]}")
     cloud._git("config", "user.name", "Ankahi Kathayein reels")
     cloud._git("config", "user.email", "reels@days-of-odd.invalid")
-    # A run that couldn't save would schedule the same Reels again on the next run's clone.
-    if (done := cloud._git("push", "--dry-run", "-q", "origin", "HEAD")).returncode:
-        raise RuntimeError(f"the deploy key can't push to the repo: {done.stderr.strip()[:400]}")
+    # A run that couldn't save would schedule the same Reels again on the next run's clone. A push by another run
+    # since the clone leaves it behind, which git refuses too (the reels and factory runs start in the same minute).
+    for _ in range(3):
+        if not (done := cloud._git("push", "--dry-run", "-q", "origin", "HEAD")).returncode:
+            return
+        cloud._git("pull", "-q", "--ff-only")
+    raise RuntimeError(f"the deploy key can't push to the repo: {done.stderr.strip()[:400]}")
 
 
 def _copy_render(stored: Path, folder: Path, reel: str, label: str) -> bool:
