@@ -27,6 +27,11 @@ log = logging.getLogger(__name__)
 CAPTION_CHARS, MAX_HASHTAGS = 2200, 5
 FOLLOW_LINE = "ऐसी ही अनकही कथाओं के लिए फ़ॉलो करें 🙏"
 SUBSCRIBE_LINES = ("ऐसी ही अनकही कथाओं के लिए चैनल Subscribe करें 🙏", "Instagram: @ankahi.kathayein")
+# The quiz from Reel to Reel (reel_writer): the question opens the caption, where the feed shows it before "more".
+QUIZ_LINE = "❓ आज का सवाल: {question}\nसही जवाब कमेंट में लिखिए! सही बताने वालों को {next} में शाउटआउट मिलेगा 🙏"
+ANSWER_LINE = "✅ पिछले सवाल \"{question}\" का जवाब: {answer}"
+SHOUTOUT_LINE = "🎉 सही जवाब देने वालों को शाउटआउट: {names}। शाबाश! 🙌"
+PART_LINE = "📖 {series}, भाग {number}/{of}। भाग {after} {next} में: फ़ॉलो कर लीजिए, ताकि छूटे नहीं 🙏"
 RECORD, YOUTUBE_RECORD = "instagram.json", "youtube.json"
 # A Reel's own cut for YouTube, under <reel>/youtube/ with the same id: a shorter telling with its own title and
 # opening, rendered like a Reel. Shorts the channel's viewers swiped past in the first seconds (1 Oct: 30-48% stayed)
@@ -111,16 +116,35 @@ def adopt(folder: Path, post: dict, youtube: bool = False) -> dict:
     return record
 
 
-def caption(spec: ShortSpec) -> str:
+def quiz_parts(spec: ShortSpec, following: str = "अगली रील", channel: str = "instagram") -> tuple[str, str, str]:
+    """What a post on `channel` says of the quiz and the series: this Reel's question, the answer to the last one's
+    with that channel's right answerers, and the line asking viewers to follow (FOLLOW_LINE, or the next part's).
+    A channel names only its own viewers: on Instagram an @name tags whoever has it there."""
+    asked = QUIZ_LINE.format(question=spec.quiz.question, next=following) if spec.quiz else ""
+    answered = ANSWER_LINE.format(question=spec.answers.question, answer=spec.answers.answer) if spec.answers else ""
+    if answered and (names := spec.shoutouts.get(channel)):
+        answered += "\n" + SHOUTOUT_LINE.format(names=", ".join(names))
+    follow = FOLLOW_LINE
+    if spec.part and spec.part.number < spec.part.of:
+        follow = PART_LINE.format(series=spec.part.series, number=spec.part.number, of=spec.part.of,
+                                  after=spec.part.number + 1, next=following)
+    return asked, answered, follow
+
+
+def caption(spec: ShortSpec, channel: str = "instagram") -> str:
     tags = " ".join(spec.hashtags[:MAX_HASHTAGS])
-    body = "\n\n".join(part for part in (spec.title, (spec.description or "").strip(), FOLLOW_LINE, tags) if part)
+    asked, answered, follow = quiz_parts(spec, channel=channel)
+    body = "\n\n".join(part for part in (spec.title, asked, (spec.description or "").strip(), answered, follow, tags)
+                       if part)
     return body[:CAPTION_CHARS]
 
 
 def youtube_text(spec: ShortSpec) -> str:
     """The Short's description: the Reel's own, which names its sources and credits its pictures, then the channel's."""
     tags = " ".join(spec.hashtags[:MAX_HASHTAGS])
-    body = "\n\n".join(part for part in ((spec.description or "").strip(), "\n".join(SUBSCRIBE_LINES), tags) if part)
+    asked, answered, _ = quiz_parts(spec, "अगले Short", "youtube")
+    body = "\n\n".join(part for part in (asked, (spec.description or "").strip(), answered, "\n".join(SUBSCRIBE_LINES),
+                                         tags) if part)
     return publish._youtube_text(body).encode()[:publish.DESCRIPTION_BYTES].decode(errors="ignore")
 
 
@@ -165,6 +189,18 @@ def update(spec_path: Path) -> dict:
     if result["__typename"] != "PostActionSuccess":
         raise RuntimeError(f"Buffer rejected the edit of {spec.id}: {result.get('message')}")
     log.info("updated %s on Instagram (due %s)", spec.id, result["post"]["dueAt"])
+    return result["post"]
+
+
+def update_short(folder: Path) -> dict:
+    """Send a scheduled Short's description again from its spec (its cut's once the post is the cut), keeping its
+    video and time."""
+    spec = youtube_spec(folder)
+    record = json.loads((folder / YOUTUBE_RECORD).read_text(encoding="utf-8"))
+    result = _mutate("editPost", {"id": record["id"], **_short(spec, record["media_url"], record["dueAt"])})
+    if result["__typename"] != "PostActionSuccess":
+        raise RuntimeError(f"Buffer rejected the edit of {spec.id}'s Short: {result.get('message')}")
+    log.info("updated %s on YouTube (due %s)", spec.id, result["post"]["dueAt"])
     return result["post"]
 
 

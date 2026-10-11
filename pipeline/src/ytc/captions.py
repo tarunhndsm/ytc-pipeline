@@ -165,6 +165,30 @@ def _hook_event(text: str, end: float, fonts_dir: Path, style: CaptionStyle) -> 
             f"{{\\an8\\pos({WIDTH // 2},{int(HEIGHT * style.hook_y)})\\fad(0,200)}}{body}")
 
 
+# A label is set smaller than the hook, since a question to the viewers runs to a dozen words.
+LABEL_SCALE = 0.72
+
+
+def _label_events(labels: list[tuple[str, float, float, float | None]], fonts_dir: Path,
+                  style: CaptionStyle) -> list[str]:
+    """A box like the hook's over the lines that have a label; one box across lines in a row with the same label,
+    so a question stays on screen while the viewers are asked to answer it."""
+    merged: list[list] = []
+    for text, start, end, y in labels:
+        if merged and merged[-1][0] == text and abs(merged[-1][2] - start) < 0.05:
+            merged[-1][2] = end
+        else:
+            merged.append([text, start, end, y])
+    font = _measure_font(fonts_dir / style.hook_font_file, int(style.hook_size * LABEL_SCALE))
+    events = []
+    for text, start, end, y in merged:
+        body = "\\N".join(_hook_lines(_display(text, True).split(), font)[:4])
+        top = int(HEIGHT * (style.hook_y if y is None else y))
+        events.append(f"Dialogue: 1,{_ass_time(start)},{_ass_time(end)},Label,,0,0,0,,"
+                      f"{{\\an8\\pos({WIDTH // 2},{top})\\fad(150,150)}}{body}")
+    return events
+
+
 def write_ass(
     words: list[Word],
     style: CaptionStyle,
@@ -174,12 +198,15 @@ def write_ass(
     fonts_dir: Path,
     hook: tuple[str, float] | None = None,
     beat_y: dict[int, float] | None = None,
+    labels: list[tuple[str, float, float, float | None]] | None = None,
 ) -> None:
     """Captions, and the hook's on-screen text (its words, and when it leaves) if there is one. `beat_y` moves
-    the captions of the beats it names to another height (a fraction of the frame)."""
+    the captions of the beats it names to another height (a fraction of the frame); `labels` are boxes like the
+    hook's (text, start, end, and the box's top, None for the hook's)."""
     primary, highlight, accent = (_ass_color(c) for c in (style.primary, style.highlight, style.accent))
     # libass lays out letter-spaced text glyph by glyph, which tears a Devanagari syllable from its vowel signs.
     hook_spacing = 0 if hook and any(unicodedata.category(c).startswith("M") for c in hook[0]) else 1
+    label_spacing = 0 if any(unicodedata.category(c).startswith("M") for text, *_ in labels or [] for c in text) else 1
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
         f"PlayResX: {WIDTH}\nPlayResY: {HEIGHT}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
@@ -191,7 +218,9 @@ def write_ass(
         f"0,0,0,0,100,100,0,0,1,{style.outline},4,5,60,60,0,1\n"
         # BorderStyle 3 draws a box in the outline color behind each line.
         f"Style: Hook,{style.hook_font},{style.hook_size},{highlight},{highlight},&H38000000,&H00000000,"
-        f"0,0,0,0,100,100,{hook_spacing},0,3,18,0,8,60,60,0,1\n\n"
+        f"0,0,0,0,100,100,{hook_spacing},0,3,18,0,8,60,60,0,1\n"
+        f"Style: Label,{style.hook_font},{int(style.hook_size * LABEL_SCALE)},{highlight},{highlight},&H38000000,"
+        f"&H00000000,0,0,0,0,100,100,{label_spacing},0,3,16,0,8,60,60,0,1\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     font = _measure_font(fonts_dir / style.font_file, style.size)
@@ -230,6 +259,8 @@ def write_ass(
             )
     if hook and hook[0].strip():
         events.append(_hook_event(hook[0], hook[1], fonts_dir, style))
+    if labels:
+        events += _label_events([label for label in labels if label[0].strip()], fonts_dir, style)
     path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
 
 

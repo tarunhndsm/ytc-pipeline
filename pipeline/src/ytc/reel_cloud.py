@@ -133,6 +133,86 @@ def _wants_short(folder: Path) -> bool:
     return record is None or bool(record.get("withdrawn") and instagram.cut(folder))
 
 
+def _spec_of(folder: Path) -> dict:
+    import yaml
+
+    path = folder / "short.yaml"
+    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+
+
+def _answers(folder: Path) -> str:
+    """The Reel whose question this one answers (reel_writer's quiz from Reel to Reel), or ""."""
+    return (_spec_of(folder).get("answers") or {}).get("reel") or ""
+
+
+def _chained(folder: Path) -> bool:
+    """Whether a Reel is in the quiz chain, whose posts keep their order on every channel."""
+    spec = _spec_of(folder)
+    return bool(spec.get("quiz") or spec.get("answers"))
+
+
+def unanswered() -> set[str]:
+    """Reels whose question no Reel answers, though a later Reel answers an earlier one (reel_writer.asked_before
+    passed them over while the judge had failed them): sent now, their question would never get its answer."""
+    from . import reel_writer, reels
+
+    made = {path.parent.name: _spec_of(path.parent) for path in reels.REELS.glob("ak*/short.yaml")}
+    answered = {(spec.get("answers") or {}).get("reel") for spec in made.values()}
+    skips = [(spec["answers"]["reel"], reel) for reel, spec in made.items()
+             if (spec.get("answers") or {}).get("reel") and not reel_writer.turned_down(reels.REELS / reel)]
+    return {reel for reel, spec in made.items() if spec.get("quiz") and reel not in answered
+            and any(before < reel < later for before, later in skips)}
+
+
+def _after(folder: Path, booked: dict[str, datetime], gone: set[str]) -> tuple[datetime | None, str]:
+    """When a Reel that answers another's question may go out on Instagram: after that one. (None, "") when it
+    answers none, or one no viewer will see; (None, why) while that one waits."""
+    from . import instagram, reel_writer, reels
+
+    if not (before := _answers(folder)):
+        return None, ""
+    if before in booked:
+        return booked[before], ""
+    record = reels._read(reels.REELS / before / instagram.RECORD)
+    if record and not record.get("withdrawn"):
+        return datetime.fromisoformat(record["dueAt"].replace("Z", "+00:00")), ""
+    if record or before in gone or reel_writer.turned_down(reels.REELS / before):
+        return None, ""
+    return None, f"waiting for {before}, whose question it answers"
+
+
+def _youtube_after(folder: Path, mirrored: dict[str, datetime]) -> tuple[datetime | None, str]:
+    """When a Reel that answers another's question may go out on YouTube: after that one's Short, as _after."""
+    from . import reels
+
+    if not (before := _answers(folder)):
+        return None, ""
+    if before in mirrored:
+        return mirrored[before], ""
+    earlier = reels.REELS / before
+    if due := _due(earlier, youtube=True):
+        return due, ""
+    if _due(earlier) and _wants_short(earlier):
+        return None, f"waiting for {before}'s Short, whose question it answers"
+    return None, ""
+
+
+def _facebook_after(folder: Path, sent: dict[str, datetime], start: datetime) -> tuple[datetime | None, str]:
+    """When a Reel that answers another's question may go out on Facebook: after that one, as _after."""
+    from . import facebook, reels
+
+    if not (before := _answers(folder)):
+        return None, ""
+    if before in sent:
+        return sent[before], ""
+    earlier = reels.REELS / before
+    if (record := facebook.record(earlier)) and record.get("dueAt"):
+        return datetime.fromisoformat(record["dueAt"].replace("Z", "+00:00")), ""
+    if facebook.auto_candidate(earlier, start):
+        return None, f"waiting for {before} on Facebook, whose question it answers"
+    return None, ""
+
+
 def _dues(youtube: bool = False) -> list[datetime]:
     from . import reels
 
@@ -161,11 +241,20 @@ def _ahead(now: datetime, days: int) -> list[date]:
     return [first + timedelta(days=n) for n in range(days)]
 
 
-def youtube_slot(due: datetime, now: datetime, planned: list[datetime]) -> datetime:
+def youtube_slot(due: datetime, now: datetime, planned: list[datetime], after: datetime | None = None) -> datetime:
     """A free YouTube slot for a Reel due on Instagram at `due`: on that day while one is still LEAD away, else on the
     soonest day after. A Reel already out on Instagram catches up on the day up to COVER_DAYS ahead with the fewest
-    Shorts, the soonest of those."""
+    Shorts, the soonest of those. A Reel that answers another's question takes the first open slot after `after`,
+    that one's Short."""
     taken = {_minute(when) for when in _dues(youtube=True) + planned}
+    if after is not None:
+        first = max(due, now + LEAD, after).astimezone(IST).date()
+        for day in (first + timedelta(days=n) for n in range(14)):
+            for hour, mins in YOUTUBE_SLOTS:
+                slot = datetime(day.year, day.month, day.day, hour, mins, tzinfo=IST)
+                if slot > after and slot > now + LEAD and slot not in taken:
+                    return slot
+        raise RuntimeError(f"YouTube has no free slot in the two weeks from {first:%d %b}")
     if due > now + LEAD:
         first = due.astimezone(IST).date()
         days = [first + timedelta(days=n) for n in range(14)]
@@ -195,6 +284,7 @@ def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
     # Pinned Shorts first, since the queue frees one place per Short sent; then the Reels still to go out on
     # Instagram, so each keeps its slot; the ones already out catch up after.
     waiting.sort(key=lambda item: (item[1].name not in pins, item[0] <= now + LEAD, item[0]))
+    mirrored: dict[str, datetime] = {}
     for due, folder in waiting:
         reel = folder.name
         withdrawn = (folder / instagram.YOUTUBE_RECORD).exists()
@@ -207,9 +297,15 @@ def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
         if len({d for d in _dues(youtube=True) if d > now} | set(planned)) >= QUEUE:
             done["held"][f"{reel} (YouTube)"] = "waiting for room in the YouTube queue"
             continue
+        after, why = _youtube_after(folder, mirrored)
+        if why:
+            done["held"][f"{reel} (YouTube)"] = why
+            continue
         taken = {_minute(when) for when in _dues(youtube=True) + planned}
-        slot = pins[reel] if reel in pins and pins[reel] not in taken else youtube_slot(due, now, planned)
+        slot = pins[reel] if reel in pins and pins[reel] not in taken and not after else \
+            youtube_slot(due, now, planned, after)
         planned.append(slot)
+        mirrored[reel] = slot
         if dry:
             done["mirrored"][reel] = f"would go out on YouTube {slot.astimezone(IST):%a %d %b %H:%M} IST"
             continue
@@ -222,23 +318,27 @@ def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
         except Exception as err:
             log.exception("mirroring %s to YouTube failed", reel)
             done["errors"].append(f"mirroring {reel} to YouTube failed: {err}"[:300])
+            mirrored.pop(reel, None)
     return planned
 
 
-def facebook_slot(due: datetime, now: datetime, taken: set[datetime], per_day: Counter) -> datetime | None:
-    """Keep Instagram's slot on Facebook when free; otherwise use the next balanced Reel slot on or after it."""
+def facebook_slot(due: datetime, now: datetime, taken: set[datetime], per_day: Counter,
+                  after: datetime | None = None) -> datetime | None:
+    """Keep Instagram's slot on Facebook when free; otherwise use the next balanced Reel slot on or after it. A Reel
+    that answers another's question goes out after `after`, that one's post."""
     exact = _minute(due)
-    if exact > now + LEAD and exact not in taken and per_day[exact.date()] < len(SLOTS):
+    if exact > now + LEAD and exact not in taken and per_day[exact.date()] < len(SLOTS) and \
+            (after is None or exact > after):
         return exact
-    first = max(due, now + LEAD).astimezone(IST).date()
+    first = max(due, now + LEAD, after or due).astimezone(IST).date()
     for have, days in ((0, COVER_DAYS), (1, FULL_DAYS), (2, FULL_DAYS)):
         for offset in range(days):
             day = first + timedelta(days=offset)
             if per_day[day] > have:
                 continue
-            for hour, minute in EVENING_FIRST:
+            for hour, minute in (SLOTS if after else EVENING_FIRST):
                 slot = datetime(day.year, day.month, day.day, hour, minute, tzinfo=IST)
-                if slot > now + LEAD and slot >= due and slot not in taken:
+                if slot > now + LEAD and slot >= due and slot not in taken and (after is None or slot > after):
                     return slot
     return None
 
@@ -264,6 +364,7 @@ def facebook_mirror(now: datetime, done: dict, dry: bool = False) -> None:
     buffered = facebook.reel_posts(posts)
     queued, taken, per_day = facebook.queued(posts, reels.REELS, now)
     waiting.sort(key=lambda item: item[0])
+    sent: dict[str, datetime] = {}
     for due, folder in waiting:
         reel = folder.name
         if post := buffered.get(reel):
@@ -274,13 +375,18 @@ def facebook_mirror(now: datetime, done: dict, dry: bool = False) -> None:
         if len(queued) >= facebook.QUEUE:
             done["held"][f"{reel} (Facebook)"] = "waiting for room in the Facebook queue"
             continue
-        if not (slot := facebook_slot(due, now, taken, per_day)):
+        after, why = _facebook_after(folder, sent, start)
+        if why:
+            done["held"][f"{reel} (Facebook)"] = why
+            continue
+        if not (slot := facebook_slot(due, now, taken, per_day, after)):
             done["held"][f"{reel} (Facebook)"] = f"no free Facebook Reel slot in the next {FULL_DAYS} days"
             continue
         if dry:
             queued.add(f"planned:{reel}")
             taken.add(slot)
             per_day[slot.date()] += 1
+            sent[reel] = slot
             done["facebook"][reel] = f"would go out on Facebook {slot:%a %d %b %H:%M} IST"
             continue
         try:
@@ -296,6 +402,7 @@ def facebook_mirror(now: datetime, done: dict, dry: bool = False) -> None:
         actual = _minute(datetime.fromisoformat(saved["dueAt"].replace("Z", "+00:00")))
         taken.add(actual)
         per_day[actual.date()] += 1
+        sent[reel] = actual
         done["facebook"][reel] = f"{actual:%a %d %b %H:%M} IST"
 
 
@@ -393,10 +500,11 @@ def lineup(now: datetime, done: dict, planned: list[datetime], dry: bool = False
     moves: list[tuple[Path, datetime, str]] = []
     for reel, pin in sorted(pins.items(), key=lambda p: p[1]):
         folder = reels.REELS / reel
-        if folder not in queued or queued[folder] == pin:
+        if folder not in queued or queued[folder] == pin or _chained(folder):
             continue
         there = next((f for f, when in queued.items() if when == pin), None)
-        if (there is None and pin in taken) or (there is not None and there.name in pins):
+        # A Short of the quiz chain keeps its place: moved, it could come before the one whose question it answers.
+        if (there is None and pin in taken) or (there is not None and (there.name in pins or _chained(there))):
             done["held"][f"{reel} (YouTube)"] = f"pinned to {pin:%a %d %b %H:%M} IST, which another Short keeps"
             continue
         taken.discard(queued[folder])
@@ -411,7 +519,7 @@ def lineup(now: datetime, done: dict, planned: list[datetime], dry: bool = False
         queued[folder] = pin
         taken.add(pin)
     for folder, when in sorted(queued.items(), key=lambda q: q[1]):
-        if (when.hour, when.minute) in YOUTUBE_SLOTS or folder.name in pins:
+        if (when.hour, when.minute) in YOUTUBE_SLOTS or folder.name in pins or _chained(folder):
             continue
         taken.discard(when)
         if not (slot := _evening_slot(now, taken, when.date())):
@@ -434,7 +542,8 @@ def spread(now: datetime, done: dict, planned: list[datetime], dry: bool = False
     taken = {_minute(when) for when in _dues(youtube=True) + planned}
     pinned = _pins(now)
     movable = {folder: _minute(yt) for folder in reels.REELS.iterdir() if folder.is_dir()
-               and (yt := _due(folder, youtube=True)) and yt > now + LEAD and folder.name not in pinned}
+               and (yt := _due(folder, youtube=True)) and yt > now + LEAD and folder.name not in pinned
+               and not _chained(folder)}
     for day in _ahead(now, COVER_DAYS):
         per_day = Counter(when.date() for when in taken)
         if per_day[day] or not (slot := _open(day, YOUTUBE_FIRST, taken, now)):
@@ -461,19 +570,29 @@ def spread(now: datetime, done: dict, planned: list[datetime], dry: bool = False
         planned.append(slot)
 
 
-def free_slots(now: datetime, count: int, planned: list[datetime] | None = None) -> list[datetime]:
+def free_slots(now: datetime, count: int, planned: list[datetime] | None = None,
+               after: datetime | None = None) -> list[datetime]:
     """The Instagram slots the next `count` Reels take, from LEAD after `now`: the evening of the soonest day up to
     COVER_DAYS ahead that has no Reel, else another slot on the soonest day up to FULL_DAYS ahead with the fewest.
-    Fewer than `count` when those days are full."""
+    A Reel that answers another's question takes the first open slot after `after`, that one's. Fewer than `count`
+    when those days are full."""
     taken = {_minute(due) for due in _dues() + (planned or [])}
     free: list[datetime] = []
-    while len(free) < count and (slot := _reel_slot(now, taken)):
+    while len(free) < count and (slot := _reel_slot(now, taken, after)):
         free.append(slot)
         taken.add(slot)
     return free
 
 
-def _reel_slot(now: datetime, taken: set[datetime]) -> datetime | None:
+def _reel_slot(now: datetime, taken: set[datetime], after: datetime | None = None) -> datetime | None:
+    if after is not None:
+        first = max(after, now).astimezone(IST).date()
+        for day in (first + timedelta(days=n) for n in range(FULL_DAYS)):
+            for hour, mins in SLOTS:
+                slot = datetime(day.year, day.month, day.day, hour, mins, tzinfo=IST)
+                if slot > after and slot > now + LEAD and slot not in taken:
+                    return slot
+        return None
     per_day = Counter(when.date() for when in taken)
     for have, days in ((0, COVER_DAYS), (1, FULL_DAYS), (2, FULL_DAYS)):
         for day in _ahead(now, days):
@@ -482,20 +601,31 @@ def _reel_slot(now: datetime, taken: set[datetime]) -> datetime | None:
     return None
 
 
-def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = False) -> None:
+def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = False,
+               chain: dict | None = None) -> None:
     """Room the Reels that reach the bar leave in the queue goes to the ones the bar alone holds (every score at
     least reels.PASS_SCORE), best first: the owner wants the queue kept full, and a slot without a Reel costs the page
-    more than a Reel under the recent ones' mean. Their records say so, and they don't count toward the bar."""
+    more than a Reel under the recent ones' mean. Their records say so, and they don't count toward the bar. Reels
+    of the quiz chain keep its order (`chain`: work's booked, gone and unsent)."""
     from . import instagram, publish, reels
 
+    chain = chain or {"booked": {}, "gone": set(), "unsent": set()}
     held = sorted(((reels._read(folder / reels.REVIEW)["total"], folder)
                    for folder in sorted(p.parent for p in reels.REELS.glob("ak*/short.yaml"))
                    if not (folder / instagram.RECORD).exists() and folder.name not in done["scheduled"]
+                   and folder.name not in chain["unsent"]
                    and (folder / f"{folder.name}.mp4").exists() and not reels.unshippable(folder, with_bar=False)),
                   key=lambda h: h[0], reverse=True)
     for total, folder in held:
-        if len({d for d in _dues() if d > now} | set(planned)) >= QUEUE or not (slots := free_slots(now, 1, planned)):
+        if len({d for d in _dues() if d > now} | set(planned)) >= QUEUE:
             return
+        after, why = _after(folder, chain["booked"], chain["gone"])
+        if why:
+            continue
+        if not (slots := free_slots(now, 1, planned, after)):
+            if after is None:
+                return
+            continue
         slot, bar = slots[0], reels.bar(folder.name)
         if not dry:
             try:
@@ -508,6 +638,7 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
                 done["errors"].append(f"scheduling {folder.name} to fill the queue failed: {err}"[:300])
                 continue
         planned.append(slot)
+        chain["booked"][folder.name] = slot
         done["held"].pop(folder.name, None)
         done["scheduled"][folder.name] = (f"{'would go out ' if dry else ''}{slot:%a %d %b %H:%M} IST, below the bar "
                                           f"({total} < {bar}) to keep the queue full")
@@ -681,6 +812,10 @@ def work(dry: bool = False) -> dict:
         except Exception as err:
             log.exception("checking Buffer's channels and failed posts failed")
             done["errors"].append(f"checking Buffer's channels and failed posts failed: {err}"[:300])
+    # The quiz chain: each Reel goes out after the one whose question it answers (booked: this run's slots), even
+    # below the bar; a Reel whose question no Reel will answer stays (unsent), and one that can't go out is gone.
+    needed = {before for path in reels.REELS.glob("ak*/short.yaml") if (before := _answers(path.parent))}
+    chain: dict = {"booked": {}, "gone": set(), "unsent": unanswered()}
     for spec_path in sorted(reels.REELS.glob("ak*/short.yaml")):
         folder = spec_path.parent
         reel = folder.name
@@ -701,6 +836,7 @@ def work(dry: bool = False) -> dict:
             try:
                 done["reviewed"][reel] = reels.review(folder)["total"]
             except reels.Unfit as err:
+                chain["gone"].add(reel)
                 done["held"][reel] = f"not sent to the judge: {err}"
                 continue
             except (llm.OutOfQuota, llm.Overloaded) as err:
@@ -711,31 +847,46 @@ def work(dry: bool = False) -> dict:
                 log.exception("reviewing %s failed", reel)
                 done["errors"].append(f"reviewing {reel} failed: {err}"[:300])
                 continue
+        note = None
         if why := reels.unshippable(folder):
-            done["held"][reel] = why
+            # A Reel whose question a later one answers goes out with every score passing, under the bar or not.
+            if reel not in needed or reels.unshippable(folder, with_bar=False):
+                done["held"][reel] = why
+                continue
+            note = {"below_bar": reels.bar(reel)}
+        if reel in chain["unsent"]:
+            done["held"][reel] = "a later Reel answers an earlier question than its own, which would go unanswered"
+            continue
+        after, why = _after(folder, chain["booked"], chain["gone"])
+        if why:
+            done["held"][reel] = f"passed; {why}"
             continue
         if not scheduling or len({d for d in _dues() if d > now} | set(planned)) >= QUEUE:
             done["held"][reel] = "passed; waiting for room in the queue"
             continue
-        if not (slots := free_slots(now, 1, planned)):
+        if not (slots := free_slots(now, 1, planned, after)):
             done["held"][reel] = f"passed; the next {COVER_DAYS} days have their Reels"
             continue
         slot = slots[0]
         planned.append(slot)
+        chain["booked"][reel] = slot
+        below = f", below the bar ({note['below_bar']}) since a later Reel answers its question" if note else ""
         if dry:
-            done["scheduled"][reel] = f"would go out {slot:%a %d %b %H:%M} IST"
+            done["scheduled"][reel] = f"would go out {slot:%a %d %b %H:%M} IST{below}"
             continue
         try:
-            instagram.schedule(spec_path, slot)
-            done["scheduled"][reel] = f"{slot:%a %d %b %H:%M} IST"
+            instagram.schedule(spec_path, slot, note)
+            done["scheduled"][reel] = f"{slot:%a %d %b %H:%M} IST{below}"
         except publish.BufferBusy as err:
             scheduling = False
+            chain["booked"].pop(reel)
             done["held"][reel] = f"passed; Buffer is busy ({err})"
         except Exception as err:
             log.exception("scheduling %s failed", reel)
+            chain["booked"].pop(reel)
             done["errors"].append(f"scheduling {reel} failed: {err}"[:300])
     if scheduling:
-        fill_queue(now, done, planned, dry)
+        fill_queue(now, done, planned, dry, chain)
     youtube_planned: list[datetime] = []
     if os.environ.get("IG_BUFFER_YOUTUBE_CHANNEL_ID") and scheduling:
         youtube_planned = mirror(now, done, dry)
@@ -755,6 +906,16 @@ def work(dry: bool = False) -> dict:
             except Exception as err:
                 log.exception("the Facebook %s failed", name)
                 done["errors"].append(f"the Facebook {name} failed: {err}"[:300])
+    if os.environ.get("IG_YOUTUBE_TOKEN") and scheduling and not dry:
+        try:
+            from . import shoutouts, youtube
+
+            youtube.BRAND_TOKEN_FILE.parent.mkdir(exist_ok=True)
+            youtube.BRAND_TOKEN_FILE.write_text(os.environ["IG_YOUTUBE_TOKEN"], encoding="utf-8")
+            shoutouts.youtube_round(now, done, youtube.BRAND_TOKEN_FILE)
+        except Exception as err:
+            log.exception("the YouTube shoutouts failed")
+            done["errors"].append(f"the YouTube shoutouts failed: {err}"[:300])
     try:
         unhost_sent(now, done, dry)
     except Exception:

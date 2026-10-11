@@ -67,6 +67,13 @@ as a demanding editor who knows what Instagram rewards: watch time and replays, 
 Below are the script with each line's timing, one frame from the middle of each shot (what viewers see, captions
 included; a long line can cut to a close-up, so it has two), the automatic checks, and the audio of the Reel.
 
+The page runs a quiz from Reel to Reel, which its viewers expect, since comments carry a Reel on Instagram: a line
+marked "quiz answer" gives the answer to the question the previous Reel asked, over that Reel's first picture, and
+the line marked "quiz question" asks this Reel's question for the comments over line 1's picture, promising the
+answer and a shout-out in the next Reel. Judge those lines on being short, clear and inviting (under retention and
+accuracy); judge payoff and ending on the story's last line, the one before the question. A title with "भाग" is one
+part of a series: it must still feel whole, ending on a turn that makes viewers want the next part.
+
 Score each 1 to 10 (10 exceptional, 8 strong, 7 publishable, 6 or lower must be fixed), with a one-line note:
 - hook: in the first 2 seconds (spoken line, on-screen text, first frame), would a devotee scrolling past stop? On
   YouTube, Reels that opened on a grey sculpture, a flower or a snake, after half a second of silence, lost half to
@@ -75,8 +82,8 @@ Score each 1 to 10 (10 exceptional, 8 strong, 7 publishable, 6 or lower must be 
 - retention: does every line make the viewer want the next, with no slack, so people watch to the end?
 - shareability: would viewers send this to family or friends? Is the revelation worth passing on?
 - payoff: does the ending deliver a real revelation that pays off the hook?
-- ending: does the last line finish the story in a complete sentence, so it feels whole to someone who watches it
-  once, with the voice and music coming to a natural close rather than stopping mid-thought?
+- ending: does the story's last line finish the story in a complete sentence, so it feels whole to someone who
+  watches it once, with the voice and music coming to a natural close rather than stopping mid-thought?
 - narration: listen. Does it sound like a real, warm Indian storyteller speaking natural Hindi? Name any
   mispronounced word, odd pause, flat or robotic moment.
 - visuals: is every frame on-topic, sharp at phone size, striking, and different from the others? Instagram won't
@@ -217,10 +224,17 @@ def review(folder: Path, runs: int = RUNS) -> dict:
     parts.append(f"\nTitle: {spec.title}\nCaption: {spec.description}\nSources: {', '.join(spec.sources)}")
     if spec.hook_text:
         parts.append(f"On-screen text over line 1: \"{spec.hook_text}\"")
+    if spec.answers:
+        parts.append(f"The previous Reel asked: \"{spec.answers.question}\" Its answer: \"{spec.answers.answer}\"")
+    if spec.quiz:
+        parts.append(f"This Reel's question: \"{spec.quiz.question}\" Its answer: \"{spec.quiz.answer}\", which the "
+                     f"source gives as: \"{spec.quiz.evidence}\"")
     parts += ["\nThe first frame, which the feed shows before anyone decides to stay:", _first_frame(video)]
+    roles = {"answer": " (quiz answer)", "quiz": " (quiz question)"}
     for i, (beat, frame) in enumerate(zip(manifest["beats"], result["beats"]), start=1):
         shots = "; ".join(SHOT_MOTION.get(s.get("motion") or s["kind"], SHOT_MOTION["camera"]) for s in beat["shots"])
-        parts.append(f"\nLine {i} ({beat['start']:.1f}-{beat['end']:.1f} s): \"{beat['text']}\" Shots: {shots}.")
+        role = roles.get(spec.beats[i - 1].role, "") if i <= len(spec.beats) else ""
+        parts.append(f"\nLine {i}{role} ({beat['start']:.1f}-{beat['end']:.1f} s): \"{beat['text']}\" Shots: {shots}.")
         parts += [Path(f) for f in frame.get("frames", [frame["frame"]]) if Path(f).exists()]
     speech = result.get("speech", {})
     parts.append(

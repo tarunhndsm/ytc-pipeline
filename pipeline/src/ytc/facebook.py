@@ -44,7 +44,7 @@ def record(folder: Path) -> dict | None:
 def caption(spec: ShortSpec) -> str:
     extra = " ".join(spec.hashtags[instagram.MAX_HASHTAGS:])
     ai = AI_LINE if spec.synthetic_media else ""
-    return "\n\n".join(part for part in (instagram.caption(spec), extra, ai, SOCIAL_LINE) if part)
+    return "\n\n".join(part for part in (instagram.caption(spec, "facebook"), extra, ai, SOCIAL_LINE) if part)
 
 
 def _post(spec: ShortSpec, media_url: str, due: str) -> dict:
@@ -155,6 +155,17 @@ def schedule(spec_path: Path, when: datetime) -> dict:
     (folder / RECORD).write_text(json.dumps(saved, indent=1) + "\n", encoding="utf-8")
     log.info("scheduled %s on Facebook for %s", spec.id, when.isoformat())
     return saved
+
+
+def update(folder: Path) -> dict:
+    """Send a scheduled Facebook Reel's text again from its spec, keeping its video and time."""
+    spec = ShortSpec.load(folder / "short.yaml")
+    saved = json.loads((folder / RECORD).read_text(encoding="utf-8"))
+    result = instagram._mutate("editPost", {"id": saved["id"], **_post(spec, saved["media_url"], saved["dueAt"])})
+    if result["__typename"] != "PostActionSuccess":
+        raise RuntimeError(f"Buffer rejected the edit of {spec.id} on Facebook: {result.get('message')}")
+    log.info("updated %s on Facebook (due %s)", spec.id, result["post"]["dueAt"])
+    return result["post"]
 
 
 def live_start(root: Path, now: datetime, dry: bool = False) -> datetime:

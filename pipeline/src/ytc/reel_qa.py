@@ -51,7 +51,8 @@ CHECK_SCHEMA = {
 CHECK_PROMPT = """You check a Reel of अनकही कथाएँ (stories from the Ramayana, the Mahabharata and the Puranas, told in
 Hindi on Instagram) before it goes out. Below is a frame from the middle of each line as a phone shows it, with the
 words spoken over it and the title of its picture. The white and yellow words are the captions; on line 1 the box of
-text is the Reel's hook.
+text is the Reel's hook, and a box on another line is the page's quiz (the answer to the last Reel's question, or
+this Reel's question for the viewers).
 
 For each line give the worst problem a viewer would notice, or none:
 - captions_on_face: the captions cross a face's eyes, nose or mouth. Captions over a beard, a body, clothes, an
@@ -84,8 +85,12 @@ def check(folder: Path) -> list[dict]:
     spec = _spec(folder)
     manifest = json.loads((folder / "work" / "manifest.json").read_text(encoding="utf-8"))
     last = len(spec["beats"])
-    repeats = [f"line {n} shows line {earlier}'s picture again on purpose" + (", to close the loop" if n == last else "")
+    repeats = [f"line {n} shows line {earlier}'s picture again on purpose" +
+               (", under the question for the viewers in its box" if beat.get("role") == "quiz" else
+                ", to close the loop" if n == last else "")
                for n, beat in enumerate(spec["beats"], start=1) if (earlier := beat.get("visual", {}).get("reuse"))]
+    repeats += [f"line {n} gives the answer to the previous Reel's question, in its box, over that Reel's first "
+                "picture on purpose" for n, beat in enumerate(spec["beats"], start=1) if beat.get("role") == "answer"]
     parts: list = [CHECK_PROMPT.format(repeats=f" In this Reel {'; '.join(repeats)}." if repeats else "")]
     with tempfile.TemporaryDirectory() as tmp:
         for number, beat in enumerate(manifest["beats"], start=1):
@@ -94,7 +99,8 @@ def check(folder: Path) -> list[dict]:
             title = (beat.get("asset") or {}).get("title") or ""
             parts += [f"\nLine {number}: \"{beat['text']}\"" + (f" (picture: {title[:90]})" if title else ""), frame]
     with reel_writer.gemini_only():
-        answer = llm.generate(parts, schema=CHECK_SCHEMA, models=reel_writer.WRITERS, purpose=f"{manifest['id']} qa")
+        answer = llm.generate(parts, schema=CHECK_SCHEMA, models=reel_writer.SCRIPT_MODELS,
+                              purpose=f"{manifest['id']} qa")
     found = {item["line"]: item for item in answer["lines"]}
     return [found.get(n) or {"line": n, "problem": "none", "detail": "", "captions_to": "middle"}
             for n in range(1, len(manifest["beats"]) + 1)]
@@ -144,7 +150,7 @@ def _move_hook(spec: dict) -> str:
 def _swap(folder: Path, spec: dict, lines: list[int], chosen: dict[int, dict],
           spares: dict[int, list[dict]]) -> dict[int, str]:
     """Give each line its next spare picture, or failing that an earlier line's picture again; the change by line."""
-    beats, last = spec["beats"], len(spec["beats"])
+    beats, own = spec["beats"], reel_pictures.own_lines(spec["beats"])
     in_use = {hit["ref"] for hit in chosen.values()}
     pools = {n: [s for s in spares.get(n, []) if s["ref"] not in in_use] for n in lines}
     got = {}
@@ -158,17 +164,17 @@ def _swap(folder: Path, spec: dict, lines: list[int], chosen: dict[int, dict],
             chosen[number] = hit
             reel_pictures.place(spec, number, hit)
             for later, beat in enumerate(beats, start=1):
-                if beat["visual"].get("reuse") == number and later != last:
+                if beat["visual"].get("reuse") == number and (later in own or beat.get("role") == "quiz"):
                     reel_pictures.reuse(spec, later, number)
             changes[number] = f"line {number}: {old[:60]} gave way to {hit['title'][:60]}"
             continue
-        reused = sum(1 for n, beat in enumerate(beats, start=1) if "reuse" in beat["visual"] and n != last)
+        reused = sum(1 for n, beat in enumerate(beats, start=1) if "reuse" in beat["visual"] and n in own)
         if number == 1 or "reuse" in beats[number - 1]["visual"] or reused >= reel_pictures.MAX_REUSED:
             log.info("line %d: no spare picture left, and it can't show an earlier one", number)
             continue
-        own = [n for n in range(1, number) if "reuse" not in beats[n - 1]["visual"]]
+        pictured = [n for n in range(1, number) if n in own and "reuse" not in beats[n - 1]["visual"]]
         shows = {n: beat["visual"].get("reuse") or n for n, beat in enumerate(beats, start=1)}
-        earlier = reel_pictures.least_run(own, shows, number) or max(own)
+        earlier = reel_pictures.least_run(pictured, shows, number) or max(pictured)
         chosen.pop(number, None)
         reel_pictures.reuse(spec, number, earlier)
         for later, beat in enumerate(beats, start=1):
@@ -188,9 +194,10 @@ def fix(folder: Path, problems: list[dict]) -> list[str]:
     chosen = {int(n): hit for n, hit in json.loads((folder / reel_pictures.PICTURES).read_text(encoding="utf-8")).items()}
     spares = {int(n): hits for n, hits in json.loads((folder / reel_pictures.SPARES).read_text(encoding="utf-8")).items()}
     spec = _spec(folder)
-    last = len(spec["beats"])
-    # The loop line shows line 1's picture on purpose: a mismatch there isn't line 1's picture's fault.
-    swaps = sorted({p["line"] for p in problems if p["problem"] in SWAPS and p["line"] != last})
+    own = reel_pictures.own_lines(spec["beats"])
+    # The loop line, the question and the answer show their pictures on purpose: a mismatch there isn't the
+    # picture's fault.
+    swaps = sorted({p["line"] for p in problems if p["problem"] in SWAPS and p["line"] in own})
     swapped = _swap(folder, spec, swaps, chosen, spares) if swaps else {}
     changes = list(swapped.values())
     if any(p["problem"] == "hook_on_face" and p["line"] == 1 for p in problems) and 1 not in swapped:

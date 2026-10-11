@@ -67,6 +67,13 @@ class Beat(_Model):
     # Where this line's captions sit (0 is the top of the frame, 1 the bottom), for a picture with a face where
     # they would otherwise go; empty keeps the caption style's height.
     caption_y: float | None = Field(None, ge=0.15, le=0.85)
+    # A Reel's lines around its story (reel_writer): "answer" gives the previous Reel's question its answer, "quiz"
+    # asks the viewers this one's.
+    role: Literal["story", "answer", "quiz"] = "story"
+    # A few words in a box like the hook's over this line, and the box's top as a fraction of the height (empty:
+    # the hook's height).
+    label: str = ""
+    label_y: float | None = Field(None, ge=0.08, le=0.5)
 
 
 class Voice(_Model):
@@ -127,6 +134,33 @@ class CaptionStyle(_Model):
     hook_y: float = Field(0.15, ge=0.08, le=0.5)
 
 
+class Quiz(_Model):
+    """The question a Reel asks its viewers to answer in the comments; the next Reel gives the answer."""
+
+    question: str
+    answer: str
+    # Spellings a right answer in the comments may use, in Devanagari and in Latin letters.
+    accepted: list[str] = []
+    # The source's words that settle the answer.
+    evidence: str = ""
+
+
+class Answered(_Model):
+    """The earlier Reel whose question this one answers, which goes out before it on every channel."""
+
+    reel: str
+    question: str
+    answer: str
+
+
+class Part(_Model):
+    """One part of a story told over several Reels."""
+
+    series: str
+    number: int = Field(ge=1)
+    of: int = Field(ge=2)
+
+
 class ShortSpec(_Model):
     id: str
     title: str
@@ -134,6 +168,11 @@ class ShortSpec(_Model):
     description: str = ""
     # A few words on screen over the first beat, a teaser that adds to the spoken hook.
     hook_text: str = ""
+    quiz: Quiz | None = None
+    answers: Answered | None = None
+    # The viewers who answered that question right, by channel, as each channel names them (ytc.shoutouts).
+    shoutouts: dict[Literal["instagram", "youtube", "facebook"], list[str]] = {}
+    part: Part | None = None
     sources: list[str] = []
     hashtags: list[str] = []
     tags: list[str] = []

@@ -44,9 +44,14 @@ from . import reel_pictures, reel_writer, reels
 IST = ZoneInfo("Asia/Kolkata")
 PENDING_MIN = 3
 AHEAD_MIN = 10
-# Instagram has 3 slots a day; one more a day catches up on empty ones.
-DAILY_CAP = 4
+# Instagram has 3 slots a day; two more a day catch up on empty ones.
+DAILY_CAP = 5
 GIVE_UP = 3
+# How long a new story waits for the judge of the Reel whose question it answers, after that Reel was made: one the
+# checks keep from the judge (too long, too loud) would otherwise stop the factory.
+JUDGE_WAIT = timedelta(hours=6)
+# A series part the judge fails goes back to the top of Next, so the next part doesn't go out without it; twice.
+PART_TRIES = 2
 TRANSIENT_GIVE_UP = 8
 BACKLOG_LOW = 4
 STUCK = timedelta(days=5)
@@ -81,13 +86,7 @@ def _due(record: dict | None) -> datetime | None:
 
 
 def _judged_and_failed(folder: Path) -> bool:
-    review = _read(folder / reels.REVIEW)
-    if not review or sum(r.get("judge") == reels.JUDGE for r in review.get("runs") or []) < reels.RUNS:
-        return False
-    try:
-        return not reels.passes(review, folder.name, with_bar=False)
-    except Exception:
-        return False
+    return reel_writer.turned_down(folder)
 
 
 def _faulted(folder: Path) -> list[str]:
@@ -110,8 +109,9 @@ def _pictures_failed(folder: Path, mine: dict) -> bool:
     except (KeyError, TypeError):
         return False
     beats = ((_read(folder / reel_writer.SCRIPT) or {}).get("script") or {}).get("beats") or []
-    # The last line always shows line 1's picture again.
-    return bool(beats) and len(beats) - 1 - len(_read(folder / reel_pictures.PICTURES) or {}) <= reel_pictures.MAX_REUSED
+    pictured = {int(n) for n in _read(folder / reel_pictures.PICTURES) or {}}
+    missing = [n for n in reel_pictures.own_lines(beats) if n not in pictured]
+    return bool(beats) and len(missing) <= reel_pictures.MAX_REUSED
 
 
 def send_back(reel: str, state: dict) -> list[str]:
@@ -199,6 +199,52 @@ def move_row(reel: str, row: dict, note: str = "") -> bool:
         lines.insert(last + 1, f"| {row['story']} | {row['source']} | {note} |")
     BACKLOG.write_text("\n".join(lines), encoding="utf-8")
     return True
+
+
+def requeue(row: dict) -> bool:
+    """Put a story's row back at the top of Next; False when Next has it already."""
+    lines = BACKLOG.read_text(encoding="utf-8").split("\n")
+    nxt = lines.index("## Next")
+    if _row_line(lines, row["story"], nxt) is not None:
+        return False
+    header = next(i for i in range(nxt, len(lines)) if lines[i].startswith("| Story"))
+    cells = [row.get(key, "") for key in reel_writer.COLUMNS] + [row.get(reel_writer.SERIES, "")]
+    lines.insert(header + 2, "| " + " | ".join(cells) + " |")
+    BACKLOG.write_text("\n".join(lines), encoding="utf-8")
+    return True
+
+
+def requeue_parts(state: dict) -> list[str]:
+    """Put each series part every Reel of which failed (the judge, or a step GIVE_UP times) back at the top of Next,
+    up to PART_TRIES Reels a part; the stories put back. Done again each run until the part is written again, since
+    a run that makes nothing doesn't push the backlog."""
+    made: dict[tuple[str, int], list[tuple[Path, dict]]] = {}
+    for folder in sorted(p for p in reels.REELS.glob("ak*") if p.is_dir()):
+        row = (_read(folder / reel_writer.SCRIPT) or {}).get("row") or {}
+        if part := reel_writer.part_of(row):
+            made.setdefault((part["series"], part["number"]), []).append((folder, row))
+    queued = {(p["series"], p["number"]) for row in reel_writer.backlog() if (p := reel_writer.part_of(row))}
+    back = []
+    for key, tries in made.items():
+        failed = [folder for folder, _ in tries if (mine := state["reels"].get(folder.name, {})).get("set_aside") or
+                  (_judged_and_failed(folder) and not _pictures_failed(folder, mine))]
+        if key not in queued and len(failed) == len(tries) < PART_TRIES and requeue(tries[-1][1]):
+            back.append(tries[-1][1]["story"])
+    return back
+
+
+def waits_for_judge(reel: str, state: dict, now: datetime) -> str:
+    """Why the next story waits ("" when it needn't): the Reel whose question it will answer isn't booked or judged
+    yet, and was made less than JUDGE_WAIT ago. Written now, it might answer a question no viewer is asked."""
+    if not (before := reel_writer.asked_before(reel)) or (before[0] / RECORD).exists():
+        return ""
+    review = _read(before[0] / reels.REVIEW) or {}
+    if sum(r.get("judge") == reels.JUDGE for r in review.get("runs") or []) >= reels.RUNS:
+        return ""
+    pushed = (state["reels"].get(before[0].name) or {}).get("pushed")
+    if not pushed or now - datetime.fromisoformat(pushed) > JUDGE_WAIT:
+        return ""
+    return f"waiting for the judge of {before[0].name}, whose question the next Reel answers"
 
 
 def next_reset(now: datetime) -> datetime:
@@ -339,7 +385,9 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     if not reel_writer.next_story():
         done["alerts"].append(("backlog", "the backlog has no story the writer can read; no Reel made"))
         return None, done | {"decision": "no readable story"}
-    return reel_writer.next_id(), done | {"decision": "starting"}
+    if why := waits_for_judge(reel := reel_writer.next_id(), state, now):
+        return None, done | {"decision": why}
+    return reel, done | {"decision": "starting"}
 
 
 def refill(state: dict, now: datetime) -> list[str]:
@@ -372,9 +420,12 @@ def work(state_path: Path, logs: Path, force: bool = False, media: Path | None =
         state.setdefault(key, {})
     now = datetime.now(timezone.utc)
     refilled = refill(state, now)
+    requeued = requeue_parts(state) if not PAUSE.exists() else []
     reel, done = decide(state, now, force, media, stored)
     if refilled:
         done["refilled"] = refilled
+    if requeued:
+        done["requeued"] = requeued
     if reel:
         done["reel"] = reel
         if done["decision"] == "picturing again":

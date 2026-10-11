@@ -24,7 +24,7 @@ import requests
 import yaml
 from PIL import Image, ImageDraw, ImageFont
 
-from . import llm, pick, plates, rank, reel_tools, reel_writer, visuals
+from . import llm, pick, plates, rank, reel_tools, reel_writer, reels, visuals
 from .spec import ShortSpec
 
 log = logging.getLogger(__name__)
@@ -162,17 +162,28 @@ def _search(term: str) -> list[dict]:
             and int(h.get("height") or MIN_HEIGHT) >= MIN_HEIGHT and not h["url"].lower().endswith(_NOT_PICTURES)]
 
 
+def own_lines(beats: list[dict]) -> list[int]:
+    """The lines that get a picture of their own: the story's. The answer to the last Reel's question shows that
+    Reel's first picture and the question for the viewers line 1's; a script from before the quiz, without roles,
+    gave its last line line 1's picture."""
+    if not any("role" in beat for beat in beats):
+        return list(range(1, len(beats)))
+    return [n for n, beat in enumerate(beats, start=1) if beat.get("role", "story") == "story"]
+
+
 def candidates(beats: list[dict]) -> dict[int, list[dict]]:
-    """Each line's candidates (every line but the last, which shows line 1's picture), one dict per picture."""
+    """Each line's candidates (the lines with a picture of their own), one dict per picture."""
+    lines = own_lines(beats)
     # Every line's first term (the name of whoever it shows) is searched first, then every line's second, and so on.
-    ordered = sorted((k, t) for beat in beats[:-1] for k, t in enumerate(beat["search"]))
+    ordered = sorted((k, t) for n in lines for k, t in enumerate(beats[n - 1]["search"]))
     terms = list(dict.fromkeys(t for _, t in ordered))
     _met_budget.update(searches=0, refused=False)
     with ThreadPoolExecutor(6) as workers:
         found = dict(zip(terms, workers.map(_search, terms)))
     pictures: dict[str, dict] = {}
     per_line: dict[int, list[dict]] = {}
-    for number, beat in enumerate(beats[:-1], start=1):
+    for number in lines:
+        beat = beats[number - 1]
         mine = per_line[number] = []
         for term in beat["search"]:
             for hit in found[term]:
@@ -438,21 +449,29 @@ _Dumper.add_representer(str, lambda dumper, value: dumper.represent_scalar(
 
 
 def place(spec: dict, number: int, hit: dict) -> None:
-    """Show `hit` on line `number`: cropped around its subject, with the line's captions (and on line 1 the hook)
-    clear of its faces."""
+    """Show `hit` on line `number`: cropped around its subject, with the line's captions (and on line 1 the hook,
+    on a line with a label its box) clear of its faces."""
     beat = spec["beats"][number - 1]
     crop = crop_for(hit["size"], hit["subject"])
     beat["visual"] = _visual(hit, crop, number)
     beat.pop("caption_y", None)
     if number == 1:
         spec["captions"].pop("hook_y", None)
+    elif beat.get("label"):
+        # The label's box would otherwise sit at line 1's hook height, chosen for line 1's picture.
+        beat["label_y"] = HOOK_Y
     if not crop:
         # A card: the picture sits whole in a frame above the captions.
         return
     spans = _spans(hit["faces"], crop)
-    if number == 1 and not _clear(spans, HOOK_Y, HOOK_Y + HOOK_REACH):
-        spec["captions"]["hook_y"] = HOOK_LOW
+    if (number == 1 or beat.get("label")) and not _clear(spans, HOOK_Y, HOOK_Y + HOOK_REACH):
+        if number == 1:
+            spec["captions"]["hook_y"] = HOOK_LOW
+        else:
+            beat["label_y"] = HOOK_LOW
         spans.append((HOOK_LOW, HOOK_LOW + HOOK_REACH))
+    elif beat.get("label"):
+        spans.append((HOOK_Y, HOOK_Y + HOOK_REACH))
     if (height := caption_height(spans)) is not None:
         beat["caption_y"] = height
 
@@ -491,8 +510,8 @@ def shown_again(beats: list[dict], chosen: dict[int, dict], number: int, shows: 
     """The earlier line whose picture a line without one shows: the nearest that searched first for the same subject
     (a line naming Ashtavakra shows him again, not the court scene before it), else the nearest; either way not one
     that would stay on screen for a third line in a row, unless every one would."""
-    earlier = [n for n in chosen if n < number]
-    same = [n for n in earlier if beats[n - 1]["search"][:1] == beats[number - 1]["search"][:1]]
+    earlier = [n for n in chosen if n < number and n in own_lines(beats)]
+    same = [n for n in earlier if beats[n - 1].get("search", [])[:1] == beats[number - 1].get("search", [])[:1]]
     shows = shows or {}
     return least_run(same, shows, number) or least_run(earlier, shows, number) or max(same or earlier)
 
@@ -549,14 +568,19 @@ def picture(folder: Path) -> Path:
         # The hook can't go without a picture: it takes the next line's, which then shows it again.
         log.info("line 1 takes line %d's picture", min(chosen))
         chosen[1] = chosen.pop(min(chosen))
-    missing = [n for n in range(1, len(beats)) if n not in chosen]
+    own = own_lines(beats)
+    missing = [n for n in own if n not in chosen]
     if 1 in missing or len(missing) > MAX_REUSED:
         raise LookupError(f"no usable picture for lines {missing}")
     spec = reel_writer.spec_fields(draft)
-    shows = {n: n for n in chosen} | {len(beats): 1}
+    shows = {n: n for n in chosen} | {n: 1 for n in range(1, len(beats) + 1) if n not in own}
     for number in range(1, len(beats) + 1):
-        if number == len(beats):
-            spec["beats"][-1]["visual"] = {"reuse": 1}
+        beat = beats[number - 1]
+        if beat.get("role") == "answer" and (hit := asked_with(beat["from"])):
+            chosen[number], shows[number] = hit, number
+            place(spec, number, hit)
+        elif number not in own:
+            reuse(spec, number, 1)
         elif number in missing:
             earlier = shows[number] = shown_again(beats, chosen, number, shows)
             log.info("line %d shows line %d's picture again", number, earlier)
@@ -566,6 +590,13 @@ def picture(folder: Path) -> Path:
     in_use = {hit["ref"] for hit in chosen.values()}
     spares = {n: spares_for(n, ranked.get(n, []) + hits, in_use) for n, hits in shown.items()}
     return save(folder, spec, chosen, spares)
+
+
+def asked_with(reel: str) -> dict | None:
+    """The first picture of the Reel whose question a line answers, as its pictures.json has it framed."""
+    path = reels.REELS / reel / PICTURES
+    hit = (json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}).get("1")
+    return hit if hit and hit.get("size") and hit.get("subject") else None
 
 
 def main() -> None:
