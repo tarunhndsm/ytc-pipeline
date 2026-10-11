@@ -46,7 +46,7 @@ HOOK_Y, HOOK_LOW, HOOK_REACH = 0.125, 0.45, 0.2
 FRAME_ROUNDS = 3
 # Lines left without a picture of their own show an earlier line's again, framed differently; more than this many
 # and the Reel would look repetitive.
-MAX_REUSED = 2
+MAX_REUSED = 4
 KINDS = ("painting", "drawing", "print", "sculpture", "photo")
 _NOT_PICTURES = (".tif", ".tiff", ".svg", ".gif", ".webm", ".pdf", ".djvu")
 _OPEN = ("public domain", "cc0", "pd")

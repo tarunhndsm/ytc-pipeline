@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from . import captions, llm, reel_tools, reels, visuals
+from . import captions, llm, reel_sources, reels
 from .spec import ShortSpec
 
 log = logging.getLogger(__name__)
@@ -46,8 +46,6 @@ HOOK_SIZE = 148
 # After the last word the picture holds and the music fades out, so the story ends rather than stops.
 TAIL, MUSIC_FADE = 1.6, 2.0
 FIX_ROUNDS = 2
-# A page with less text than this didn't bring its chapter.
-MIN_PAGE = 1500
 HASHTAGS = ("#sanatandharma", "#ankahikathayein")
 
 GANGULI_BOOKS = {"adi": 1, "sabha": 2, "vana": 3, "virata": 4, "udyoga": 5, "bhishma": 6, "drona": 7, "karna": 8,
@@ -242,15 +240,22 @@ def next_id() -> str:
     return f"ak{max(numbers, default=0) + 1:03d}"
 
 
+def set_aside() -> list[dict]:
+    """The rows of the backlog's Set aside table: story, source and why."""
+    if "\n## Set aside" not in (text := BACKLOG.read_text(encoding="utf-8")):
+        return []
+    rows = []
+    for line in text.split("\n## Set aside", 1)[1].split("\n## ", 1)[0].splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if line.startswith("|") and len(cells) >= 3 and cells[0] != "Story" and set(cells[0]) - set("-: "):
+            rows.append(dict(zip(("story", "source", "why"), cells)))
+    return rows
+
+
 def read_sources(urls: list[str]) -> list[dict]:
-    """Each page's text. A page that doesn't load its chapter raises, since the script needs all of them."""
-    pages = []
-    for url in urls:
-        text = reel_tools._text(visuals._get(url, timeout=40).text)
-        if len(text) < MIN_PAGE:
-            raise LookupError(f"{url} has only {len(text)} characters of text")
-        pages.append({"url": url, "text": text})
-    return pages
+    """Each page's text (reel_sources: saved, live or archived). A page that can't be read raises, since the script
+    needs all of them."""
+    return [{"url": url, "text": reel_sources.read(url)} for url in urls]
 
 
 def _reviewed() -> list[tuple[Path, dict]]:

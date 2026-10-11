@@ -11,7 +11,8 @@ folder, and the hourly reel_run judges and books it. These steps and the judge s
 (reset 12:30 IST), so a quota error pauses the factory until then instead of counting as a failure, and so does a
 Gemini outage or a network drop, until it has happened TRANSIENT_GIVE_UP times to the same step. A step that fails
 GIVE_UP times for any other reason sets the Reel aside; a story the writer can't write moves to "## Set aside".
-With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run.
+With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run. When
+BACKLOG_LOW or fewer stories the writer can read are left, reel_backlog adds new ones that check out.
 
 The state (each Reel's progress and failures, Reels made per day, the quota pause, alerts sent) is kept by the run
 (content/instagram/automation/factory.json on CircleCI); `work` reads and writes it as the JSON file the run hands
@@ -220,6 +221,9 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
         # Only the error the step died of counts: its log also holds the overloads and refusals it got past.
         last = tail.strip().splitlines()[-1][:300] if tail.strip() else str(code)
         mine["last_error"] = f"{step}: {last}"
+        # The next try writes the step's log again, so a failed try's log is kept under its own name.
+        failed_log = logs / f"{reel}_{step}_failed_{datetime.now(timezone.utc):%m%d%H%M}.log"
+        shutil.copyfile(logs / f"{reel}_{step}.log", failed_log)
         if QUOTA.search(last):
             state["cooldown_until"] = next_reset(datetime.now(timezone.utc)).isoformat()
             done["why"] = f"{step} hit the Gemini quota; paused until {state['cooldown_until']}"
@@ -242,8 +246,7 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             move_row("", found[0], f"{reel}: the writer failed {GIVE_UP} times")
             shutil.rmtree(folder, ignore_errors=True)
             state["reels"].pop(reel)
-        done["alerts"].append((f"aside-{reel}", f"set {reel} aside after {step} failed {GIVE_UP} times ({last[:120]}); "
-                               "the next run starts the next story"))
+        # No alert: the next run starts the next story, and the owner hears only if the calendar runs dry.
         return "set aside"
     return "made"
 
@@ -266,8 +269,9 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     if found["stuck"]:
         done["alerts"].append(("stuck", f"{', '.join(found['stuck'])} made over {STUCK.days} days ago and still not "
                                "booked"))
-    if (left := readable_left()) <= BACKLOG_LOW:
-        done["alerts"].append(("backlog", f"only {left} stories the writer can read are left in the backlog"))
+    if (left := readable_left()) <= 1:
+        done["alerts"].append(("backlog", f"only {left} stories the writer can read are left in the backlog, and "
+                               f"refilling it didn't work ({state.get('refill_error') or 'no new story checked out'})"))
     short = len(found["pending"]) < PENDING_MIN or len(found["booked"]) + len(found["pending"]) < AHEAD_MIN
     if not (short or force or found["unfinished"]):
         return None, done | {"decision": "supply is enough"}
@@ -282,13 +286,39 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     return reel_writer.next_id(), done | {"decision": "starting"}
 
 
+def refill(state: dict, now: datetime) -> list[str]:
+    """When BACKLOG_LOW or fewer readable stories are left, add new ones (reel_backlog), once a day unless the Gemini
+    quota stopped it; the stories added."""
+    today = f"{now.astimezone(IST):%Y-%m-%d}"
+    if PAUSE.exists() or state.get("refilled") == today or readable_left() > BACKLOG_LOW:
+        return []
+    if (until := state.get("cooldown_until")) and datetime.fromisoformat(until) > now:
+        return []
+    from . import llm, reel_backlog
+
+    try:
+        found = reel_backlog.refill()
+    except llm.OutOfQuota:
+        return []
+    except Exception as err:
+        state["refilled"], state["refill_error"] = today, f"{type(err).__name__}: {err}"[:300]
+        return []
+    state["refilled"] = today
+    state["refill_error"] = "" if found["added"] else f"all {len(found['turned_down'])} proposals were turned down"
+    print(json.dumps({"refill": found}, ensure_ascii=False), flush=True)
+    return found["added"]
+
+
 def work(state_path: Path, logs: Path, force: bool = False, media: Path | None = None, stored: set[str] | None = None,
          until: datetime | None = None) -> dict:
     state = _read(state_path) or {}
     for key in ("reels", "made", "alerts"):
         state.setdefault(key, {})
     now = datetime.now(timezone.utc)
+    refilled = refill(state, now)
     reel, done = decide(state, now, force, media, stored)
+    if refilled:
+        done["refilled"] = refilled
     if reel:
         done["reel"] = reel
         done["result"] = make(reel, state, logs, done, until)

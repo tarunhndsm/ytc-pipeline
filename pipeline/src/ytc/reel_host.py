@@ -37,7 +37,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import cloud, llm, reel_cloud, reel_factory, reel_media
+from . import cloud, llm, reel_cloud, reel_factory, reel_media, reel_sources
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ CONTENT = cloud.CHECKOUT / "content" / "instagram"
 FACTORY = "content/instagram/automation/factory.json"
 ALERTS = "content/instagram/automation/alerts.json"
 BACKLOG = "content/instagram/backlog.md"
+SOURCES = "content/instagram/sources"
 LOGS = Path(tempfile.gettempdir()) / "reel-logs"
 NEEDED = ("YTC_DEPLOY_KEY", "AK_MEDIA_TOKEN", "IG_GEMINI_API_KEY", "IG_BUFFER_API_KEY", "IG_BUFFER_CHANNEL_ID",
           "IG_BUFFER_YOUTUBE_CHANNEL_ID", "IG_BUFFER_FACEBOOK_CHANNEL_ID", "IG_YOUTUBE_TOKEN", "CLOUDINARY_URL",
@@ -287,7 +288,8 @@ def factory(force: bool = False, until: datetime | None = None) -> dict:
         done["errors"].append("the factory's step ran out of time" if code == 124
                               else f"the factory's step failed (exit {code})")
     reel, result = done.get("reel"), done.get("result")
-    paths = [FACTORY]
+    # The source pages a run read are kept for the next, which may be refused them.
+    paths = [FACTORY, SOURCES] + ([BACKLOG] if done.get("refilled") else [])
     message = f"Reel factory on CircleCI: {reel} {result}" + (f" ({done['why']})" if done.get("why") else "") \
         if reel else "Reel factory on CircleCI: state"
     if reel and result == "made":
@@ -328,7 +330,7 @@ def factory(force: bool = False, until: datetime | None = None) -> dict:
 
 def selftest() -> dict:
     """What the runs need: the keys (by name), the clone and its right to push, a round trip through the releases (a
-    "selftest" draft, dropped again) and ffmpeg."""
+    "selftest" draft, dropped again), ffmpeg, and which routes to the writer's source pages answer."""
     import imageio_ffmpeg
 
     found: dict = {"missing": [key for key in NEEDED if not os.environ.get(key)]}
@@ -344,6 +346,7 @@ def selftest() -> dict:
         store.drop("selftest")
     found["ffmpeg"] = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-version"], capture_output=True,
                                      text=True).stdout.split("\n", 1)[0]
+    found["sources"] = reel_sources.check()
     found["published"] = publish(cloud.CHECKOUT, os.environ["AK_MEDIA_TOKEN"])
     return found
 
