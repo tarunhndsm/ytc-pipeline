@@ -166,7 +166,9 @@ def _swap(folder: Path, spec: dict, lines: list[int], chosen: dict[int, dict],
         if number == 1 or "reuse" in beats[number - 1]["visual"] or reused >= reel_pictures.MAX_REUSED:
             log.info("line %d: no spare picture left, and it can't show an earlier one", number)
             continue
-        earlier = max(n for n in range(1, number) if "reuse" not in beats[n - 1]["visual"])
+        own = [n for n in range(1, number) if "reuse" not in beats[n - 1]["visual"]]
+        shows = {n: beat["visual"].get("reuse") or n for n, beat in enumerate(beats, start=1)}
+        earlier = reel_pictures.least_run(own, shows, number) or max(own)
         chosen.pop(number, None)
         reel_pictures.reuse(spec, number, earlier)
         for later, beat in enumerate(beats, start=1):

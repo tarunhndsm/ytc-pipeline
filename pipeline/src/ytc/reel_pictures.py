@@ -46,7 +46,7 @@ HOOK_Y, HOOK_LOW, HOOK_REACH = 0.125, 0.45, 0.2
 FRAME_ROUNDS = 3
 # Lines left without a picture of their own show an earlier line's again, framed differently; more than this many
 # and the Reel would look repetitive.
-MAX_REUSED = 4
+MAX_REUSED = 2
 KINDS = ("painting", "drawing", "print", "sculpture", "photo")
 _NOT_PICTURES = (".tif", ".tiff", ".svg", ".gif", ".webm", ".pdf", ".djvu")
 _OPEN = ("public domain", "cc0", "pd")
@@ -464,12 +464,35 @@ def reuse(spec: dict, number: int, earlier: int) -> None:
         beat["caption_y"] = spec["beats"][earlier - 1]["caption_y"]
 
 
-def shown_again(beats: list[dict], chosen: dict[int, dict], number: int) -> int:
+def run_length(shows: dict[int, int], number: int) -> int:
+    """How many lines in a row, around line `number`, show the picture it shows (`shows`: line -> the line whose
+    picture it shows)."""
+    picture, run = shows.get(number), 1
+    for step in (-1, 1):
+        n = number + step
+        while shows.get(n) == picture:
+            run, n = run + 1, n + step
+    return run
+
+
+def least_run(options: list[int], shows: dict[int, int], number: int) -> int | None:
+    """The nearest of `options` (earlier lines) whose picture line `number`, and the lines showing line `number`'s,
+    can show without one picture staying on screen for three lines in a row, which judges fail a Reel for."""
+    for earlier in sorted(options, reverse=True):
+        trial = {n: earlier if n == number or seen == number else seen for n, seen in shows.items()} | {number: earlier}
+        if run_length(trial, number) < 3:
+            return earlier
+    return None
+
+
+def shown_again(beats: list[dict], chosen: dict[int, dict], number: int, shows: dict[int, int] | None = None) -> int:
     """The earlier line whose picture a line without one shows: the nearest that searched first for the same subject
-    (a line naming Ashtavakra shows him again, not the court scene before it), else the nearest."""
+    (a line naming Ashtavakra shows him again, not the court scene before it), else the nearest; either way not one
+    that would stay on screen for a third line in a row, unless every one would."""
     earlier = [n for n in chosen if n < number]
     same = [n for n in earlier if beats[n - 1]["search"][:1] == beats[number - 1]["search"][:1]]
-    return max(same or earlier)
+    shows = shows or {}
+    return least_run(same, shows, number) or least_run(earlier, shows, number) or max(same or earlier)
 
 
 def spares_for(number: int, hits: list[dict], in_use: set[str]) -> list[dict]:
@@ -524,11 +547,12 @@ def picture(folder: Path) -> Path:
     if 1 in missing or len(missing) > MAX_REUSED:
         raise LookupError(f"no usable picture for lines {missing}")
     spec = reel_writer.spec_fields(draft)
+    shows = {n: n for n in chosen} | {len(beats): 1}
     for number in range(1, len(beats) + 1):
         if number == len(beats):
             spec["beats"][-1]["visual"] = {"reuse": 1}
         elif number in missing:
-            earlier = shown_again(beats, chosen, number)
+            earlier = shows[number] = shown_again(beats, chosen, number, shows)
             log.info("line %d shows line %d's picture again", number, earlier)
             reuse(spec, number, earlier)
         else:
