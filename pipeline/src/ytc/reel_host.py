@@ -101,6 +101,9 @@ def publish(source: Path, token: str) -> str:
             tar.extractall(target, members=[m for m in tar.getmembers() if not m.name.startswith(PRIVATE)],
                            filter="data")
         shutil.copy2(target / "pipeline" / "README.md", target / "README.md")
+        # GitHub Pages serves docs/: the YouTube sign-in's home page and privacy policy, which Google requires.
+        if (target / "pipeline" / "pages").is_dir():
+            shutil.copytree(target / "pipeline" / "pages", target / "docs")
         git("add", "-A")
         if git("diff", "--cached", "--quiet").returncode == 0:
             return "up to date"
