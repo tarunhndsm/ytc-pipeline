@@ -5,9 +5,11 @@ judgments (reels.review, on the brand's own Gemini project), schedules the ones 
 (instagram.schedule) so that every day has a Reel before any day has two and the queue stays full (free_slots,
 fill_queue), gives each Reel Instagram has to the brand's YouTube channel as a Short at YouTube's own evening times
 (instagram.mirror, lineup, spread), as the Reel's shorter YouTube cut once one is rendered (cuts), and mirrors each
-new Reel to the brand's Facebook Page (facebook_mirror). It pushes review.json, instagram.json, youtube.json,
-facebook.json and the Facebook mirror's start time. Once a day it saves the YouTube channel's numbers and keeps its
-playlists (channel_upkeep). The work runs from the clone's code, so a pushed fix reaches the next run without a deploy.
+new Reel to the brand's Facebook Page (facebook_mirror). Each run also checks Buffer's channels and sends a failed
+post again once (buffer_health), and takes the videos of Reels all three channels had off Cloudinary (unhost_sent).
+It pushes review.json, instagram.json, youtube.json, facebook.json and the Facebook mirror's start time. Once a day it
+saves the YouTube channel's numbers and keeps its playlists (channel_upkeep). The work runs from the clone's code, so
+a pushed fix reaches the next run without a deploy.
 
 `factory_run` makes the Reels themselves (reel_factory: write, pictures, render, QA) whenever the Instagram calendar
 runs short, puts each render in the reels volume and pushes its folder, so nothing waits for the Mac. It is scheduled
@@ -93,6 +95,9 @@ CATCH_UP_RESERVE = timedelta(hours=48)
 # Fewer Reels than this left to go out, and the owner hears the queue is running dry.
 LOW = 3
 PROBLEM_HOURS = 3
+# A post Buffer failed goes out again once, this long after the run that finds it; one due longer ago than
+# RESEND_WITHIN is left to the owner.
+RESEND_AFTER, RESEND_WITHIN = timedelta(minutes=10), timedelta(days=1)
 # The brand YouTube channel's daily numbers (youtube.stats), under the Reels' folder: subscribers and 90-day views
 # toward the Partner Program, and each Short's retention.
 STATS = Path("stats") / "youtube"
@@ -553,19 +558,129 @@ def channel_upkeep(now: datetime, done: dict) -> None:
         done["errors"].append(f"filing the YouTube Shorts into playlists failed: {err}"[:300])
 
 
+def buffer_health(now: datetime, done: dict, dry: bool = False) -> None:
+    """Buffer's side, in one request: the brand's three channels connected with their queues running, and each post
+    due in the last RESEND_WITHIN sent. A post Buffer failed goes out again once, RESEND_AFTER from now with the same
+    video; one that fails again, and a channel only the owner can reconnect, are errors the owner hears of."""
+    from . import facebook, instagram, publish, reels
+    from .spec import ShortSpec
+
+    names = {"IG_BUFFER_CHANNEL_ID": "Instagram", "IG_BUFFER_FACEBOOK_CHANNEL_ID": "Facebook",
+             "IG_BUFFER_YOUTUBE_CHANNEL_ID": "YouTube"}
+    ours = {os.environ[name]: label for name, label in names.items() if os.environ.get(name)}
+    query = """
+    query Health($channels: ChannelsInput!, $posts: PostsInput!) {
+      channels(input: $channels) { id isDisconnected isLocked isQueuePaused }
+      posts(input: $posts, first: 50) {
+        edges { node { id status dueAt channelService assets { source } error { message } } }
+      }
+    }"""
+    organization = instagram._organization()
+    answer = instagram._buffer(query, {"channels": {"organizationId": organization}, "posts": {
+        "organizationId": organization,
+        "filter": {"channelIds": list(ours), "startDate": (now - RESEND_WITHIN).isoformat(), "endDate": now.isoformat()}}})
+    found = {channel["id"]: channel for channel in answer["channels"]}
+    for channel_id, label in ours.items():
+        channel = found.get(channel_id)
+        flags = [name for flag, name in (("isDisconnected", "disconnected"), ("isLocked", "locked"),
+                                         ("isQueuePaused", "paused")) if channel and channel[flag]]
+        if not channel or flags:
+            done["errors"].append(f"Buffer's {label} channel is {' and '.join(flags) or 'gone'}, so nothing goes out "
+                                  "there until the owner reconnects it in Buffer")
+    services = {"instagram": ("Instagram", instagram.RECORD), "facebook": ("Facebook", facebook.RECORD),
+                "youtube": ("YouTube", instagram.YOUTUBE_RECORD)}
+    for post in (edge["node"] for edge in answer["posts"]["edges"]):
+        if post["status"] != "error" or post["channelService"] not in services:
+            continue
+        label, record_name = services[post["channelService"]]
+        source = next((asset["source"] for asset in post["assets"] or [] if asset.get("source")), "")
+        hosted = instagram.HOSTED_REEL.search(source)
+        reel = hosted.group(1) if hosted else post["id"]
+        why = ((post.get("error") or {}).get("message") or "no reason given")[:160]
+        failed = f"Buffer couldn't post {reel} on {label} at {_ist(post['dueAt'])} ({why})"
+        path = reels.REELS / reel / record_name
+        record = json.loads(path.read_text(encoding="utf-8")) if hosted and path.exists() else {}
+        if record.get("id") != post["id"] or record.get("resent"):
+            done["errors"].append(failed[:300])
+            continue
+        if dry:
+            done["resent"][f"{reel} ({label})"] = "would send it again"
+            continue
+        when, folder = (now + RESEND_AFTER).isoformat(), path.parent
+        try:
+            if post["channelService"] == "youtube":
+                spec = instagram.youtube_spec(folder)
+                payload = instagram._short(spec, record["media_url"], when)
+            else:
+                spec = ShortSpec.load(folder / "short.yaml")
+                payload = (instagram._post(folder, spec, record["media_url"], when) if label == "Instagram"
+                           else facebook._post(spec, record["media_url"], when))
+            instagram._still_hosted(spec, record["media_url"])
+            result = instagram._mutate("editPost", {"id": post["id"], **payload})
+            if result["__typename"] != "PostActionSuccess":
+                raise RuntimeError(result.get("message"))
+        except publish.BufferBusy:
+            raise
+        except Exception as err:
+            done["errors"].append(f"{failed}, and sending it again failed: {err}"[:300])
+            continue
+        record |= {"dueAt": result["post"]["dueAt"], "resent": {"at": now.isoformat(timespec="seconds"), "why": why}}
+        path.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+        done["resent"][f"{reel} ({label})"] = f"{_ist(record['dueAt'])}, after: {why}"
+
+
+def unhost_sent(now: datetime, done: dict, dry: bool = False) -> None:
+    """Take a Reel's videos off Cloudinary once Instagram, Facebook and YouTube all had their posts KEEP ago: Buffer
+    fetches a video only at its slot, and the free plan counts what stays hosted against the same 25 credits a month
+    as what Buffer downloads. A Reel short of one of the three keeps its videos."""
+    from . import facebook, instagram, publish, reels
+
+    for folder in sorted(path.parent for path in reels.REELS.glob(f"ak*/{instagram.RECORD}")):
+        paths = [folder / name for name in (instagram.RECORD, facebook.RECORD, instagram.YOUTUBE_RECORD)]
+        if not all(path.exists() for path in paths):
+            continue
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+        if records[0].get("unhosted_at") or any(r.get("withdrawn") or not r.get("dueAt") for r in records):
+            continue
+        if max(datetime.fromisoformat(r["dueAt"].replace("Z", "+00:00")) for r in records) > now - KEEP:
+            continue
+        hosted = sorted({r["media_public_id"] for r in records if r.get("media_public_id")})
+        if dry:
+            done["unhosted"][folder.name] = f"would take off {', '.join(hosted)}"
+            continue
+        try:
+            for public_id in hosted:
+                publish.unhost_video(public_id)
+        except Exception as err:
+            log.warning("taking %s's videos off Cloudinary failed: %s", folder.name, err)
+            continue
+        records[0]["unhosted_at"] = now.isoformat(timespec="seconds")
+        paths[0].write_text(json.dumps(records[0], indent=1) + "\n", encoding="utf-8")
+        done["unhosted"][folder.name] = ", ".join(hosted)
+
+
 def work(dry: bool = False) -> dict:
     """Review each rendered Reel still missing judgments and schedule the ones that pass, in id order."""
     from . import instagram, llm, publish, reels
 
     now = datetime.now(timezone.utc)
     done: dict = {"reviewed": {}, "scheduled": {}, "mirrored": {}, "facebook": {}, "moved": {}, "held": {},
-                  "errors": []}
+                  "resent": {}, "unhosted": {}, "errors": []}
     judging, scheduling, planned = True, True, []
     try:
         buffered = instagram.posts_by_reel(instagram._env("IG_BUFFER_CHANNEL_ID"))
     except Exception as err:
         buffered, scheduling = {}, False
         done["errors"].append(f"couldn't read Buffer's Instagram posts, so none were scheduled: {err}"[:300])
+    if scheduling:
+        try:
+            buffer_health(now, done, dry)
+        except publish.BufferBusy as err:
+            scheduling = False
+            done["held"]["Buffer's check"] = f"Buffer is busy ({err})"
+        except Exception as err:
+            log.exception("checking Buffer's channels and failed posts failed")
+            done["errors"].append(f"checking Buffer's channels and failed posts failed: {err}"[:300])
     for spec_path in sorted(reels.REELS.glob("ak*/short.yaml")):
         folder = spec_path.parent
         reel = folder.name
@@ -640,6 +755,10 @@ def work(dry: bool = False) -> dict:
             except Exception as err:
                 log.exception("the Facebook %s failed", name)
                 done["errors"].append(f"the Facebook {name} failed: {err}"[:300])
+    try:
+        unhost_sent(now, done, dry)
+    except Exception:
+        log.exception("taking sent Reels' videos off Cloudinary failed")
     done["idle"] = idle_days(now, planned, youtube_planned)
     upcoming = sorted({d for d in _dues() if d > now} | set(planned))
     done["queue"] = len(upcoming)

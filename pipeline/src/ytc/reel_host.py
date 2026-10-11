@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +57,9 @@ ALERTS = "content/instagram/automation/alerts.json"
 BACKLOG = "content/instagram/backlog.md"
 SOURCES = "content/instagram/sources"
 LOGS = Path(tempfile.gettempdir()) / "reel-logs"
+# A run that can't start tries again, this many times this many seconds apart: GitHub refuses a clone or a release
+# for a moment now and then, and a run that gives up alerts the owner.
+START_TRIES, START_PAUSE = 3, 60
 NEEDED = ("YTC_DEPLOY_KEY", "AK_MEDIA_TOKEN", "IG_GEMINI_API_KEY", "IG_BUFFER_API_KEY", "IG_BUFFER_CHANNEL_ID",
           "IG_BUFFER_YOUTUBE_CHANNEL_ID", "IG_BUFFER_FACEBOOK_CHANNEL_ID", "IG_YOUTUBE_TOKEN", "CLOUDINARY_URL",
           "YTC_NTFY_TOPIC", "YTC_CONTACT")
@@ -90,6 +94,18 @@ def prepare() -> None:
     # CircleCI's checkout leaves its own key for the public repo, which GitHub would take first and then refuse.
     os.environ["GIT_SSH_COMMAND"] = "ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes"
     reel_cloud._clone()
+
+
+def _started(begin):
+    """What `begin` returns, tried again START_PAUSE later when it fails, up to START_TRIES times."""
+    for attempt in range(1, START_TRIES + 1):
+        try:
+            return begin()
+        except Exception:
+            if attempt == START_TRIES:
+                raise
+            log.warning("the run couldn't start (try %d of %d)", attempt, START_TRIES, exc_info=True)
+            time.sleep(START_PAUSE)
 
 
 def publish(source: Path, token: str) -> str:
@@ -240,10 +256,14 @@ def _env(**extra: str) -> dict:
 def reels(dry: bool = False) -> dict:
     """reel_cloud.reel_run on CircleCI."""
     started = datetime.now(timezone.utc)
-    try:
+
+    def begin() -> tuple[reel_media.Store, list[str]]:
         prepare()
         store = reel_media.Store()
-        brought = bring_media(store)
+        return store, bring_media(store)
+
+    try:
+        store, brought = _started(begin)
     except Exception as err:
         reel_cloud._alert(f"The Reels' run on CircleCI couldn't start: {err}"[:900])
         raise
@@ -281,9 +301,12 @@ def _keep_wip(store: reel_media.Store, reel: str, done: dict) -> None:
 
 def factory(force: bool = False, until: datetime | None = None) -> dict:
     """reel_cloud.factory_run on CircleCI: one Reel's next steps, then it ships or waits in the releases."""
-    try:
+    def begin() -> reel_media.Store:
         prepare()
-        store = reel_media.Store()
+        return reel_media.Store()
+
+    try:
+        store = _started(begin)
     except Exception as err:
         reel_cloud._alert(f"The Reel factory on CircleCI couldn't start: {err}"[:900])
         raise
