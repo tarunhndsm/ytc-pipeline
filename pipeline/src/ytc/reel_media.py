@@ -91,12 +91,16 @@ class Store:
         self.releases()[name] = release
         return release
 
-    def put(self, name: str, asset: str, path: Path) -> None:
-        """Upload a file as a release's asset, replacing one of the same name."""
+    def remove(self, name: str, asset: str) -> None:
         release = self._release(name)
         if old := next((a for a in release["assets"] if a["name"] == asset), None):
             self._call("DELETE", f"{API}/repos/{self.repo}/releases/assets/{old['id']}").raise_for_status()
             release["assets"].remove(old)
+
+    def put(self, name: str, asset: str, path: Path) -> None:
+        """Upload a file as a release's asset, replacing one of the same name."""
+        release = self._release(name)
+        self.remove(name, asset)
         with path.open("rb") as data:
             response = self._call("POST", f"{UPLOADS}/repos/{self.repo}/releases/{release['id']}/assets",
                                   params={"name": asset}, data=data, timeout=600,

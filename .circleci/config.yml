@@ -1,12 +1,13 @@
 version: 2.1
 
 # @ankahi.kathayein's Reels (pipeline/src/ytc/reel_host.py). The project's two schedules set `run`: "reels" at 15
-# past every hour, "factory" at 40 past. A push (the copy from the private repo) runs nothing.
+# past every hour, "factory" at 40 past. A third, "news", runs a cycle of the owner's news desk every quarter of an
+# hour, with the keys of the "news-desk" context. A push (the copy from the private repo) runs nothing.
 
 parameters:
   run:
     type: enum
-    enum: [none, reels, factory, selftest]
+    enum: [none, reels, factory, selftest, news, newstest]
     default: none
   dry:
     type: boolean
@@ -19,6 +20,13 @@ executors:
   python:
     docker:
       - image: cimg/python:3.12
+    environment:
+      HF_HOME: /home/circleci/.cache/huggingface
+      PYTHONUNBUFFERED: "1"
+  # Node and Chrome's libraries, for the news Shorts' HyperFrames renders.
+  browsers:
+    docker:
+      - image: cimg/python:3.12-browsers
     environment:
       HF_HOME: /home/circleci/.cache/huggingface
       PYTHONUNBUFFERED: "1"
@@ -99,6 +107,37 @@ jobs:
           name: Check the keys, the clone, the releases and ffmpeg
           working_directory: pipeline
           command: .venv/bin/python -m ytc.reel_host selftest
+  news:
+    executor: browsers
+    resource_class: medium+
+    steps:
+      - install
+      - when:
+          condition: << pipeline.parameters.dry >>
+          steps:
+            - run:
+                name: A news desk cycle that posts nothing and keeps no state
+                working_directory: pipeline
+                no_output_timeout: 55m
+                command: .venv/bin/python -m ytc.reel_host news --dry
+      - unless:
+          condition: << pipeline.parameters.dry >>
+          steps:
+            - run:
+                name: A news desk cycle
+                working_directory: pipeline
+                no_output_timeout: 55m
+                command: .venv/bin/python -m ytc.reel_host news
+  newstest:
+    executor: browsers
+    resource_class: medium+
+    steps:
+      - install
+      - run:
+          name: Render a kept news Short again, with no Gemini call
+          working_directory: pipeline
+          no_output_timeout: 55m
+          command: .venv/bin/python -m ytc.reel_host news --test
 
 workflows:
   reels:
@@ -118,3 +157,16 @@ workflows:
       equal: [selftest, << pipeline.parameters.run >>]
     jobs:
       - selftest
+  news:
+    when:
+      equal: [news, << pipeline.parameters.run >>]
+    jobs:
+      - news:
+          context: news-desk
+          serial-group: ytc-pipeline/news
+  newstest:
+    when:
+      equal: [newstest, << pipeline.parameters.run >>]
+    jobs:
+      - newstest:
+          context: news-desk

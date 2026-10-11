@@ -14,11 +14,18 @@ What git leaves out waits in a private repo's draft releases (reel_media): each 
 between factory runs, and the runs' logs, which stay off CircleCI's public pages. The factory's state and when each alert last
 went out are files in git (FACTORY, ALERTS).
 
+The same project runs the owner's news desk (pipeline/src/ytc/news, which only the clone has): `news` is one desk
+cycle, with the desk's state kept between runs as a tar in the NEWS_RELEASE draft release. Its keys come from the
+"news-desk" context, which only that job gets; Ankahi's keys stay out of its environment (NEWS_HIDE).
+
     python -m ytc.reel_host reels [--dry]
     python -m ytc.reel_host factory [--force] [--until ISO]
     python -m ytc.reel_host selftest                          # the keys, the clone, the releases and ffmpeg
+    python -m ytc.reel_host news [--dry] [--test]             # a news desk cycle; --test renders a kept Short
     python -m ytc.reel_host upload content/instagram/ak011    # from the Mac: a render (or its youtube/ cut)
     python -m ytc.reel_host publish                           # from the Mac: the public copy, now
+    python -m ytc.reel_host news-seed                         # from the Mac: keep the Mac's news desk state
+    python -m ytc.reel_host news-test news/out/<short>        # from the Mac: keep a made Short for `news --test`
 """
 
 from __future__ import annotations
@@ -37,6 +44,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
+
 from . import cloud, llm, reel_cloud, reel_factory, reel_media, reel_sources
 
 log = logging.getLogger(__name__)
@@ -53,6 +62,15 @@ NEEDED = ("YTC_DEPLOY_KEY", "AK_MEDIA_TOKEN", "IG_GEMINI_API_KEY", "IG_BUFFER_AP
 PUBLIC_REPO = "tarunhndsm/ytc-pipeline"
 SHARED = ("pipeline", ".circleci")
 PRIVATE = "pipeline/src/ytc/news/"
+NEWS_RELEASE = "news desk"
+NEWS_TEST = "news test"
+# The desk's state, as paths under news/. A state is never replaced in place: each run adds a new one and then drops
+# all but the newest NEWS_STATES, so a run that dies mid-upload leaves the last one whole.
+NEWS_KEEP = ("state/local.json", "state/voice.json", "state/cycles.jsonl", "state/run.log", "voices/designed.json",
+             "voices/audition.json")
+NEWS_STATES = 3
+NEWS_MINUTES = 50
+NEWS_HIDE = ("IG_", "AK_", "YTC_DEPLOY_KEY", "YTC_CONTACT", "CIRCLECI_TOKEN")
 
 
 def _read(path: Path) -> dict:
@@ -354,6 +372,134 @@ def selftest() -> dict:
     return found
 
 
+# --- the news desk ---------------------------------------------------------------------------------------------
+
+def _news_alert(message: str) -> None:
+    """Push to the owner's phone; only the hour's first run does, so a desk that keeps failing every quarter of an
+    hour sends one alert an hour."""
+    if (topic := os.environ.get("YTC_NTFY_TOPIC")) and datetime.now(timezone.utc).minute < 15:
+        try:
+            requests.post(f"https://ntfy.sh/{topic}", data=message[:900].encode("utf-8"), timeout=30,
+                          headers={"Title": "The news desk needs attention", "Priority": "high", "Tags": "warning"})
+        except requests.RequestException as err:
+            log.warning("ntfy push failed: %s", err)
+
+
+def _news_states(store: reel_media.Store) -> list[str]:
+    """The kept states' names, newest first."""
+    return sorted((name for name in store.assets(NEWS_RELEASE) if name.startswith("state-")), reverse=True)
+
+
+def bring_news(store: reel_media.Store, folder: Path) -> str:
+    """Unpack the newest kept state into news/. A missing state is a fault, not a first run: a desk that forgot what
+    it had posted would post it again."""
+    if not (names := _news_states(store)):
+        raise RuntimeError(f'no news desk state in the "{NEWS_RELEASE}" draft release of {reel_media.REPO}')
+    with tempfile.TemporaryDirectory() as tmp:
+        packed = Path(tmp) / names[0]
+        store.get(NEWS_RELEASE, names[0], packed)
+        with tarfile.open(packed) as tar:
+            tar.extractall(folder, members=[m for m in tar.getmembers() if m.name in NEWS_KEEP], filter="data")
+    return names[0]
+
+
+def keep_news(store: reel_media.Store, folder: Path) -> str:
+    cycles = folder / "state" / "cycles.jsonl"
+    if cycles.exists():
+        lines = cycles.read_text(encoding="utf-8").splitlines(keepends=True)
+        cycles.write_text("".join(lines[-3000:]), encoding="utf-8")
+    name = f"state-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.tar.gz"
+    with tempfile.TemporaryDirectory() as tmp:
+        packed = Path(tmp) / name
+        with tarfile.open(packed, "w:gz") as tar:
+            for path in NEWS_KEEP:
+                if (folder / path).is_file():
+                    tar.add(folder / path, arcname=path)
+        store.put(NEWS_RELEASE, name, packed)
+    for old in _news_states(store)[NEWS_STATES:]:
+        store.remove(NEWS_RELEASE, old)
+    return name
+
+
+def _news_env() -> dict:
+    env = {k: v for k, v in os.environ.items() if not k.startswith(NEWS_HIDE)}
+    return env | {"PYTHONPATH": str(cloud.CHECKOUT / "pipeline" / "src"), "PYTHONUNBUFFERED": "1"}
+
+
+def _last_cycle(cycles: Path, since: datetime) -> dict:
+    """What the run's cycle did, without the editor's reasoning (this goes to CircleCI's public log)."""
+    try:
+        line = json.loads(cycles.read_text(encoding="utf-8").splitlines()[-1])
+    except (OSError, ValueError, IndexError):
+        return {}
+    if datetime.fromisoformat(line["at"]) < since:
+        return {}
+    out = {k: line[k] for k in ("at", "items", "held", "skipped") if k in line}
+    if choice := line.get("choice"):
+        out["choice"] = {k: choice.get(k) for k in ("pick", "virality", "risk")}
+    if result := line.get("result"):
+        out["result"] = {k: result[k] for k in ("skipped", "failed", "timings") if k in result}
+        out["result"]["made"] = bool(result.get("video"))
+    return out
+
+
+def news(dry: bool = False) -> dict:
+    """One news desk cycle (ytc.news.run --once) on the clone, from the newest kept state. Unless dry, it posts what it
+    makes and keeps the state it leaves; a dry run posts nothing and keeps nothing."""
+    started = datetime.now(timezone.utc)
+    folder = cloud.CHECKOUT / "news"
+    try:
+        prepare()
+        store = reel_media.Store()
+        brought = bring_news(store, folder)
+    except Exception as err:
+        _news_alert(f"The news desk's run on CircleCI couldn't start: {err}")
+        raise
+    command = [sys.executable, "-m", "ytc.news.run", "--once", *([] if dry else ["--publish"])]
+    code, _ = _step(command, _news_env(), LOGS / "news.log", NEWS_MINUTES * 60)
+    done = {"brought": brought, "exit": code, "cycle": _last_cycle(folder / "state" / "cycles.jsonl", started)}
+    _keep_log(store, "news logs", LOGS / "news.log")
+    if not dry:
+        try:
+            done["kept"] = keep_news(store, folder)
+        except Exception as err:
+            _news_alert(f"The news desk's run on CircleCI couldn't keep its state, so the next run may repeat it: {err}")
+            raise
+    if code:
+        _news_alert(f"The news desk's run on CircleCI stopped with exit code {code}; its log is in the "
+                    f'"news logs" draft release of {reel_media.REPO}.')
+    return done
+
+
+def news_test() -> dict:
+    """Render the Short kept in NEWS_TEST here (ytc.news.selftest), with no Gemini call and nothing posted."""
+    prepare()
+    store = reel_media.Store()
+    tars = [name for name in store.assets(NEWS_TEST) if name.endswith(".tar")]
+    if not tars:
+        raise RuntimeError(f'nothing in the "{NEWS_TEST}" draft release of {reel_media.REPO}')
+    short = tars[0].removesuffix(".tar")
+    parent = Path(tempfile.mkdtemp())
+    store.bring_folder(NEWS_TEST, short, parent)
+    command = [sys.executable, "-m", "ytc.news.selftest", str(parent / short)]
+    code, done = _step(command, _news_env(), LOGS / "news-test.log", NEWS_MINUTES * 60)
+    _keep_log(store, "news logs", LOGS / "news-test.log")
+    return done | {"short": short, "exit": code}
+
+
+def news_test_upload(folder: Path, store: reel_media.Store) -> str:
+    """From the Mac: keep a made Short's narration, package, project and render for `news --test`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        packed = Path(tmp) / f"{folder.name}.tar"
+        with tarfile.open(packed, "w") as tar:
+            for part in ("package.json", "voice.wav", "short.mp4", "project"):
+                tar.add(folder / part, arcname=f"{folder.name}/{part}")
+        for old in store.assets(NEWS_TEST):
+            store.remove(NEWS_TEST, old)
+        store.put(NEWS_TEST, packed.name, packed)
+    return packed.name
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m ytc.reel_host", description="@ankahi.kathayein's Reels on CircleCI")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -363,9 +509,15 @@ def main() -> None:
     making.add_argument("--force", action="store_true", help="make a Reel even when the supply is enough")
     making.add_argument("--until", type=datetime.fromisoformat, help="start no step that can't finish by then")
     commands.add_parser("selftest", help="check the keys, the clone, the releases and ffmpeg")
+    desk = commands.add_parser("news", help="one cycle of the news desk")
+    desk.add_argument("--dry", action="store_true", help="post nothing and keep no state")
+    desk.add_argument("--test", action="store_true", help="render the kept test Short instead, with no Gemini call")
     commands.add_parser("upload", help="from the Mac: put rendered Reels' media in the releases").add_argument(
         "folders", type=Path, nargs="+")
     commands.add_parser("publish", help="from the Mac: bring the public copy up to this checkout's last commit")
+    commands.add_parser("news-seed", help="from the Mac: keep the Mac's news desk state as the newest one")
+    commands.add_parser("news-test", help="from the Mac: keep a made Short for `news --test`").add_argument(
+        "folder", type=Path)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")
     for noisy in ("httpx", "urllib3"):
@@ -381,12 +533,20 @@ def main() -> None:
     if args.command == "publish":
         print(publish(PIPELINE_ROOT.parent, os.environ["AK_MEDIA_TOKEN"]))
         return
+    if args.command == "news-seed":
+        print(keep_news(reel_media.Store(), PIPELINE_ROOT.parent / "news"))
+        return
+    if args.command == "news-test":
+        print(news_test_upload(args.folder.resolve(), reel_media.Store()))
+        return
     if not os.environ.get("CIRCLECI"):
         raise SystemExit(f"`{args.command}` runs on CircleCI only: it puts the deploy key in ~/.ssh")
     if args.command == "reels":
         result = reels(args.dry)
     elif args.command == "factory":
         result = factory(args.force, args.until)
+    elif args.command == "news":
+        result = news_test() if args.test else news(args.dry)
     else:
         result = selftest()
     print(json.dumps(result, indent=1, ensure_ascii=False))
