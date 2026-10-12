@@ -226,6 +226,10 @@ def review(folder: Path, runs: int = RUNS) -> dict:
         parts.append(f"On-screen text over line 1: \"{spec.hook_text}\"")
     if spec.answers:
         parts.append(f"The previous Reel asked: \"{spec.answers.question}\" Its answer: \"{spec.answers.answer}\"")
+    elif spec.quiz:
+        # Told nothing, judges mark such a Reel down on accuracy for a missing quiz answer.
+        parts.append("No question from an earlier Reel is waiting for its answer, so this Reel rightly has no quiz "
+                     "answer line.")
     if spec.quiz:
         parts.append(f"This Reel's question: \"{spec.quiz.question}\" Its answer: \"{spec.quiz.answer}\", which the "
                      f"source gives as: \"{spec.quiz.evidence}\"")
