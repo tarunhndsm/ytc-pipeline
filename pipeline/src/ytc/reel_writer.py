@@ -52,7 +52,8 @@ INVITE = "सही जवाब कमेंट में लिखिए… �
 INVITE_PART = "सही जवाब कमेंट में लिखिए… शाउटआउट और भाग {next}, अगली रील में! फ़ॉलो कर लीजिए।"
 ASK_LABEL = "आज का सवाल: {question}"
 ANSWER_LABEL = "जवाब: {answer}"
-QUIZ_TONE = "a bright, playful, inviting tone for the question to the viewers and the last line"
+# Not "playful": ak043, read with it, added a remark and a laugh of the voice's own.
+QUIZ_TONE = "a bright, warm, inviting tone for the question to the viewers and the last line"
 NUMBER_WORDS = {1: "एक", 2: "दो", 3: "तीन", 4: "चार", 5: "पाँच", 6: "छह"}
 # Line 1 is said in about 3 seconds: on YouTube, half to three quarters of viewers swiped away in the first seconds
 # of Reels whose line 1 ran 11 to 15 words (1 Oct); "रावण का असली नाम… रावण नहीं था।" (6) drew 65.5k plays.

@@ -55,8 +55,9 @@ WHISPER_LANGUAGE = {"a": "en", "b": "en", "h": "hi", "e": "es", "f": "fr", "i": 
 MIN_COVERAGE = 0.75
 # The longest stretch of a take, in seconds, that may match nothing in the script. Line coverage can't see a take
 # that adds sentences of its own: one read 80 s of invented story between two lines and still scored 86% or more on
-# every line. Whisper's mishearing left at most 0.4 s unmatched in six good Hindi takes.
-MAX_UNSCRIPTED = 1.5
+# every line. Whisper's mishearing left at most 0.4 s unmatched in six good Hindi takes; ak043's take, kept at 1.5,
+# said "कैसी रही ये जनरेशन?" (1.3 s) and laughed between two lines.
+MAX_UNSCRIPTED = 1.0
 TAKES = 3
 # A line the recognizer heard less of than this is listed for the reviewer to listen to.
 SPEECH_CLEAR = 0.9
