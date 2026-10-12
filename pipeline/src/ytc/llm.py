@@ -37,6 +37,18 @@ FLASH = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5
 FLASH_LITE = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest")
 # (The faster gemma-4-26b-a4b-it got simple facts wrong in testing.)
 GEMMA = ("gemma-4-31b-it",)
+# US dollars per million tokens on the paid tier (input; output with thinking), Standard prices until 31 Dec 2026
+# from ai.google.dev/gemini-api/docs/pricing, read 12 Oct 2026. A TTS model's output is audio, 25 tokens a second.
+# Gemma has no paid tier. The free tier costs nothing; these say what the same calls would cost on a paid project.
+PRICES = {
+    "gemini-3.8-flash": (0.75, 3.75), "gemini-3.6-flash": (0.75, 3.75), "gemini-3-flash-preview": (0.50, 3.00),
+    "gemini-3.5-flash-lite": (0.30, 2.50), "gemini-3.1-flash-lite": (0.25, 1.50),
+    "gemini-flash-lite-latest": (0.30, 2.50),
+    "gemini-3.8-flash-tts": (0.50, 9.00), "gemini-3.8-flash-lite-tts": (0.50, 6.00),
+    "gemini-3.1-flash-tts-preview": (1.00, 20.00),
+}
+# A Gemini model the table doesn't name is priced like the dearest Flash, so a total errs high rather than low.
+DEAREST = (0.75, 3.75)
 
 # Free models from other providers, named "provider:model", through OpenAI-compatible chat APIs. A provider's
 # models are skipped while its key isn't set (key None: it needs none). gap: seconds between one process's requests
@@ -110,10 +122,35 @@ _last_call: dict[str, float] = {}
 _pace_lock = threading.Lock()
 calls: list[dict] = []
 _answered = threading.local()
+_record_lock = threading.Lock()
+
+
+def record(call: dict) -> None:
+    """Keep a model call's tokens, and append it to YTC_USAGE_LOG at once when that's set, so a step that's killed
+    still leaves what it spent."""
+    calls.append(call)
+    if path := os.environ.get("YTC_USAGE_LOG"):
+        with _record_lock, open(path, "a", encoding="utf-8") as out:
+            out.write(json.dumps({**call, "usd": round(cost(call), 6)}) + "\n")
+
+
+def cost(call: dict) -> float:
+    """What a call costs in US dollars on the paid tier; nothing for Gemma, Cursor or another provider's model."""
+    model = call.get("model") or ""
+    if ":" in model or model.startswith(("gemma", "cursor/")):
+        return 0.0
+    rate_in, rate_out = PRICES.get(model, DEAREST)
+    out = (call.get("output_tokens") or 0) + (call.get("thinking_tokens") or 0)
+    return ((call.get("input_tokens") or 0) * rate_in + out * rate_out) / 1e6
 
 
 class OutOfQuota(RuntimeError):
     """Every model in the ladder has used up today's free quota."""
+
+
+class OutOfCredits(OutOfQuota):
+    """The project's prepaid Gemini credits ran out (HTTP 402): every key on its billing account fails until the
+    owner adds credits in AI Studio, so no other model can answer either."""
 
 
 class Overloaded(RuntimeError):
@@ -314,8 +351,8 @@ def _cursor(prompt, schema, thinking, purpose):
     if not (found := cursor_llm.ask(prompt, schema=schema, thinking=thinking, purpose=purpose)):
         return _NO_ANSWER
     answer, model, seconds = found
-    calls.append({"model": f"cursor/{model}", "purpose": purpose, "seconds": round(seconds, 1),
-                  "input_tokens": None, "output_tokens": None, "thinking_tokens": None})
+    record({"model": f"cursor/{model}", "purpose": purpose, "seconds": round(seconds, 1),
+            "input_tokens": None, "output_tokens": None, "thinking_tokens": None})
     _answered.model = f"cursor/{model}"
     return answer
 
@@ -346,7 +383,7 @@ def _ask(model: str, body: dict, schema: dict | None, purpose: str):
             candidate = (reply.get("candidates") or [{}])[0]
             text = "".join(p.get("text", "") for p in candidate.get("content", {}).get("parts", []) if not p.get("thought"))
             usage = reply.get("usageMetadata", {})
-            calls.append(
+            record(
                 {
                     "model": model,
                     "purpose": purpose,
@@ -376,6 +413,8 @@ def _ask(model: str, body: dict, schema: dict | None, purpose: str):
             error = response.json().get("error", {}) if response.content else {}
         except ValueError:
             error = {"message": response.text[:200]}
+        if response.status_code == 402:
+            raise OutOfCredits(f"Gemini {model} 402: {error.get('message', '')[:200]}")
         if response.status_code == 429:
             kind, delay = _quota_kind(error)
             if kind == "day":
@@ -467,9 +506,9 @@ def _ask_backup(model: str, body: dict, schema: dict | None, purpose: str):
             choice = (reply.get("choices") or [{}])[0]
             text = _THINKING.sub("", (choice.get("message") or {}).get("content") or "").strip()
             usage = reply.get("usage") or {}
-            calls.append({"model": model, "purpose": purpose, "seconds": round(time.monotonic() - started, 1),
-                          "input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens"),
-                          "thinking_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")})
+            record({"model": model, "purpose": purpose, "seconds": round(time.monotonic() - started, 1),
+                    "input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens"),
+                    "thinking_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")})
             if not text:
                 log.warning("%s returned no text (finish reason %s); retrying", model, choice.get("finish_reason"))
                 failures += 1

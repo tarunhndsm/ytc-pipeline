@@ -250,8 +250,10 @@ def review(folder: Path, runs: int = RUNS) -> dict:
     fallback, llm.CURSOR_FALLBACK = llm.CURSOR_FALLBACK, False
     try:
         while len(done) < runs:
+            before = len(llm.calls)
             run = llm.generate(parts, schema=REVIEW_SCHEMA, models=(JUDGE,), purpose=f"{spec.id} review")
-            done.append({k: run[k] for k in RUN_KEYS if k in run} | {"judge": llm.answered_by()})
+            usd = round(sum(llm.cost(c) for c in llm.calls[before:]), 4)
+            done.append({k: run[k] for k in RUN_KEYS if k in run} | {"judge": llm.answered_by(), "usd": usd})
             log.info("%s judgment %d: total %s", spec.id, len(done), total(run))
             # Saved after each judgment: the next one can fail on the judge's daily quota.
             _save(folder, done, video_sha, result)

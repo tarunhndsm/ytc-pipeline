@@ -57,6 +57,10 @@ BACKLOG_LOW = 4
 STUCK = timedelta(days=5)
 RESET = (12, 40)
 QUOTA = re.compile(r"OutOfQuota|free quota left today|RESOURCE_EXHAUSTED", re.I)
+# The paid project's prepaid credits ran out (llm.OutOfCredits, HTTP 402). Nothing answers until the owner adds
+# credits, which can be any time, so the factory looks again after CREDITS_WAIT rather than at the quota's reset.
+CREDITS = re.compile(r"OutOfCredits|Payment Required", re.I)
+CREDITS_WAIT = timedelta(hours=1)
 TRANSIENT = re.compile(r"Overloaded|\b503\b|UNAVAILABLE|high demand|Read timed out|TimeoutError|NameResolution|"
                        r"ClientConnector|ConnectionError|Connection reset|RemoteDisconnected|"
                        r"Temporary failure in name resolution|SSLError", re.I)
@@ -167,7 +171,8 @@ def supply(state: dict, now: datetime, media: Path | None = None, stored: set[st
 
 
 def readable_left() -> int:
-    return sum(bool(reel_writer.source_urls(row["source"])) for row in reel_writer.backlog())
+    return sum(bool(reel_writer.source_urls(row["source"])) and not reel_writer.held(row)
+               for row in reel_writer.backlog())
 
 
 def _row_line(lines: list[str], story: str, start: int) -> int | None:
@@ -252,6 +257,25 @@ def next_reset(now: datetime) -> datetime:
     return reset if reset > now else reset + timedelta(days=1)
 
 
+def _spend(usage_log: Path) -> dict:
+    """What a step's model calls came to (llm.record's lines): calls, tokens and US dollars at paid prices."""
+    total = {"calls": 0, "tokens": 0, "usd": 0.0}
+    for line in usage_log.read_text(encoding="utf-8").splitlines() if usage_log.exists() else []:
+        try:
+            call = json.loads(line)
+        except ValueError:
+            continue
+        total["calls"] += 1
+        total["tokens"] += sum(call.get(k) or 0 for k in ("input_tokens", "output_tokens", "thinking_tokens"))
+        total["usd"] += call.get("usd") or 0
+    return total
+
+
+def _add_spend(into: dict, spent: dict) -> None:
+    for key, value in spent.items():
+        into[key] = round(into.get(key, 0) + value, 4)
+
+
 def _run(command: list[str], log: Path, timeout: int) -> tuple[int, str]:
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("w") as out:
@@ -286,8 +310,8 @@ def _steps(reel: str) -> list[tuple[str, object, list[str], int]]:
 
 
 def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None = None) -> str:
-    """Take one Reel as far as it goes; "made", "quota", "failed", "set aside", or "paused" when the next step
-    can't finish by `until`."""
+    """Take one Reel as far as it goes; "made", "quota", "credits", "failed", "set aside", or "paused" when the next
+    step can't finish by `until`."""
     folder = reels.REELS / reel
     mine = state["reels"].setdefault(reel, {"started": datetime.now(IST).isoformat(timespec="seconds"), "fails": {}})
     if (script := _read(folder / reel_writer.SCRIPT)) and script.get("row"):
@@ -304,8 +328,19 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             cut, timeout = left < timeout, min(timeout, left)
         done["steps"].append(step)
         started = time.time()
-        code, tail = _run(command, logs / f"{reel}_{step}.log", timeout)
-        print(f"{reel} {step}: exit {code} after {time.time() - started:.0f} s", flush=True)
+        usage_log = logs / f"{reel}_{step}_usage.jsonl"
+        usage_log.unlink(missing_ok=True)
+        os.environ["YTC_USAGE_LOG"] = str(usage_log)
+        try:
+            code, tail = _run(command, logs / f"{reel}_{step}.log", timeout)
+        finally:
+            os.environ.pop("YTC_USAGE_LOG", None)
+        # Every try counts, failed ones too: they cost the same.
+        spent = _spend(usage_log)
+        _add_spend(mine.setdefault("usage", {}).setdefault(step, {}), spent)
+        _add_spend(state.setdefault("spend", {}).setdefault(f"{datetime.now(IST):%Y-%m-%d}", {}), spent)
+        print(f"{reel} {step}: exit {code} after {time.time() - started:.0f} s, {spent['calls']} model calls, "
+              f"${spent['usd']:.3f} at paid prices", flush=True)
         if code == -1 and step == "render":
             # The encode writes the Reel's video in place, so a render stopped midway leaves a newer, broken one.
             (folder / f"{reel}.mp4").unlink(missing_ok=True)
@@ -322,6 +357,12 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
         # The next try writes the step's log again, so a failed try's log is kept under its own name.
         failed_log = logs / f"{reel}_{step}_failed_{datetime.now(timezone.utc):%m%d%H%M}.log"
         shutil.copyfile(logs / f"{reel}_{step}.log", failed_log)
+        if CREDITS.search(last):
+            state["cooldown_until"] = (datetime.now(timezone.utc) + CREDITS_WAIT).isoformat(timespec="seconds")
+            done["alerts"].append(("credits", "the Gemini project's prepaid credits ran out, so no Reel can be made "
+                                   "or judged: add credits in AI Studio > Billing (the factory looks again every hour)"))
+            done["why"] = f"{step}: the Gemini credits ran out; paused until {state['cooldown_until']}"
+            return "credits"
         if QUOTA.search(last):
             state["cooldown_until"] = next_reset(datetime.now(timezone.utc)).isoformat()
             done["why"] = f"{step} hit the Gemini quota; paused until {state['cooldown_until']}"
@@ -400,6 +441,7 @@ def refill(state: dict, now: datetime) -> list[str]:
         return []
     from . import llm, reel_backlog
 
+    before = len(llm.calls)
     try:
         found = reel_backlog.refill()
     except llm.OutOfQuota:
@@ -407,6 +449,11 @@ def refill(state: dict, now: datetime) -> list[str]:
     except Exception as err:
         state["refilled"], state["refill_error"] = today, f"{type(err).__name__}: {err}"[:300]
         return []
+    finally:
+        new = llm.calls[before:]
+        _add_spend(state.setdefault("spend", {}).setdefault(today, {}), {
+            "calls": len(new), "usd": sum(llm.cost(c) for c in new),
+            "tokens": sum(c.get(k) or 0 for c in new for k in ("input_tokens", "output_tokens", "thinking_tokens"))})
     state["refilled"] = today
     state["refill_error"] = "" if found["added"] else f"all {len(found['turned_down'])} proposals were turned down"
     print(json.dumps({"refill": found}, ensure_ascii=False), flush=True)

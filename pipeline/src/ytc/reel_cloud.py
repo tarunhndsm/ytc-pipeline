@@ -842,6 +842,9 @@ def work(dry: bool = False) -> dict:
             except (llm.OutOfQuota, llm.Overloaded) as err:
                 judging = False
                 done["held"][reel] = f"{reels.judgments(folder)} of {reels.RUNS} judgments; waiting for the judge ({err})"
+                if isinstance(err, llm.OutOfCredits):
+                    done["errors"].append("the Gemini project's prepaid credits ran out, so no Reel can be judged: "
+                                          "add credits in AI Studio > Billing")
                 continue
             except Exception as err:
                 log.exception("reviewing %s failed", reel)

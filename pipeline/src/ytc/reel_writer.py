@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import re
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
@@ -26,6 +27,9 @@ BACKLOG = reels.REELS / "backlog.md"
 COLUMNS = ("story", "hook", "source", "picture", "care")
 # An optional sixth column puts a row in a story told over several Reels: "<the series' Hindi name> | k/n".
 SERIES = "series"
+# An optional seventh, a date (YYYY-MM-DD, India time), keeps a row back until that day: a festival story is made
+# a few days before its festival, so it airs on it while the Reels still go out in the order they were made.
+FROM = "from"
 SCRIPT = "work/script.json"
 # The brand project's Flash models except the judge's, whose daily quota the reviews need, and gemini-flash-latest,
 # which may be one of the others under another name.
@@ -226,7 +230,15 @@ def _numbers(text: str) -> list[int]:
     return found
 
 
+# sacred-texts splits the Shanti and Anushasana Parvas into parts numbered again from 1: Shanti's sections 174 and
+# 302 are m12b001 and m12c001, Anushasana's section 36 is m13b001.
+GANGULI_PARTS = {12: (1, 174, 302), 13: (1, 36)}
+
+
 def _ganguli(book: int, section: int) -> str:
+    if starts := GANGULI_PARTS.get(book):
+        part = max(i for i, start in enumerate(starts) if section >= start)
+        return f"https://sacred-texts.com/hin/m{book:02d}/m{book:02d}{'abc'[part]}{section - starts[part] + 1:03d}.htm"
     return f"https://sacred-texts.com/hin/m{book:02d}/m{book:02d}{section:03d}.htm"
 
 
@@ -264,8 +276,17 @@ def backlog() -> list[dict]:
     for line in BACKLOG.read_text(encoding="utf-8").split("\n## Next", 1)[1].splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if line.startswith("|") and len(cells) >= len(COLUMNS) and cells[0] != "Story" and set(cells[0]) - set("-: "):
-            rows.append(dict(zip(COLUMNS, cells)) | ({SERIES: cells[len(COLUMNS)]} if cells[len(COLUMNS):] else {}))
+            rows.append(dict(zip(COLUMNS, cells)) | dict(zip((SERIES, FROM), cells[len(COLUMNS):])))
     return rows
+
+
+def held(row: dict, today: date | None = None) -> bool:
+    """Whether a row waits for the date in its From column."""
+    try:
+        start = date.fromisoformat(row.get(FROM) or "")
+    except ValueError:
+        return False
+    return (today or datetime.now(reels.IST).date()) < start
 
 
 def part_of(row: dict) -> dict | None:
@@ -322,9 +343,9 @@ def part_told(part: dict, reel_id: str) -> list[str]:
 
 
 def next_story() -> tuple[dict, list[str]] | None:
-    """The first story in the backlog whose source this can read, with its pages."""
+    """The first story in the backlog whose source this can read and whose day has come, with its pages."""
     for row in backlog():
-        if urls := source_urls(row["source"]):
+        if not held(row) and (urls := source_urls(row["source"])):
             return row, urls
     return None
 

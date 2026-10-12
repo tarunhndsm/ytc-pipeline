@@ -18,7 +18,7 @@ import numpy as np
 import requests
 import soundfile as sf
 
-from . import ff
+from . import ff, llm
 from .spec import ShortSpec, Voice
 
 log = logging.getLogger(__name__)
@@ -212,15 +212,24 @@ def _gemini_take(text: str, voice: Voice, models: list[str] | None = None) -> tu
     errors = []
     for model in models or ([voice.model] if voice.model else GEMINI_TTS):
         for attempt in range(3):
+            started = time.monotonic()
             resp = requests.post(f"{GEMINI_API}/{model}:generateContent", headers={"x-goog-api-key": key},
                                  json=body, timeout=300)
             if resp.status_code == 200:
+                reply = resp.json()
+                usage = reply.get("usageMetadata", {})
+                llm.record({"model": model, "purpose": "narration", "seconds": round(time.monotonic() - started, 1),
+                            "input_tokens": usage.get("promptTokenCount"),
+                            "output_tokens": usage.get("candidatesTokenCount"),
+                            "thinking_tokens": usage.get("thoughtsTokenCount")})
                 try:
-                    part = resp.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+                    part = reply["candidates"][0]["content"]["parts"][0]["inlineData"]
                     return _samples(base64.b64decode(part["data"]), part.get("mimeType", "")), model
                 except (KeyError, IndexError):
                     errors.append(f"{model}: no audio")
                     continue
+            if resp.status_code == 402:
+                raise llm.OutOfCredits(f"{model}: HTTP 402, the Gemini project's prepaid credits ran out")
             if resp.status_code == 429:
                 quota, delay = _quota(resp)
                 errors.append(f"{model}: HTTP 429 {quota}".rstrip())
