@@ -44,8 +44,9 @@ from . import reel_pictures, reel_writer, reels
 IST = ZoneInfo("Asia/Kolkata")
 PENDING_MIN = 3
 AHEAD_MIN = 10
-# Instagram has 3 slots a day; two more a day catch up on empty ones.
-DAILY_CAP = 5
+# Instagram has 3 slots a day and about half the Reels pass the judge; a Reel sent back for new pictures counts
+# again. The supply check (PENDING_MIN, AHEAD_MIN) stops the factory well before this once the queue is full.
+DAILY_CAP = 8
 GIVE_UP = 3
 # How long a new story waits for the judge of the Reel whose question it answers, after that Reel was made: one the
 # checks keep from the judge (too long, too loud) would otherwise stop the factory.
