@@ -58,6 +58,20 @@ SPARES = "work/spares.json"
 AVOID = "work/avoid.json"
 HIT_KEYS = ("ref", "title", "date", "url", "page", "thumb", "source", "license", "artist", "width", "height")
 FRAMED_KEYS = ("size", "subject", "faces", "kind", "hindi")
+# A title naming another faith's figures or books, or a Mughal court, never reaches the models: both prompts forbid
+# such pictures, yet on 13 Oct they chose a Jain teacher for Ajamila, and a Kalpa-sutra page, Buddhist deities and
+# Murad Bakhsh's portrait for Astika. A Mughal court goes by its names, since a "Sub-Imperial Mughal" Ramayana folio
+# is the epic; the Razmnama carries Persian script. "Saint" stays allowed: museums title rishis and yogis that way too.
+OTHER_FAITH = re.compile(r"\b(jaina?|jina|mahavira|tirthankara|kalpa[- ]?sutra|parsh?vanatha|buddh\w*|bodhisattva|"
+                         r"avalokiteshvara|manjushri|lama|tibet\w*|shah|jahangir|akbar\w*|aurangzeb|babur\w*|murad|"
+                         r"razm\w*|hamza\w*|sultan|nawab|mirza|begum|sufi|dervish|qur'?an|koran|sikh|nanak|christ|"
+                         r"jesus|madonna)\b", re.I)
+# A book of Hindu myths, with Indian artists' paintings of the epics, whose title names the Buddhists too.
+NOT_OTHER_FAITH = re.compile(r"myths of the hindus (&|and) buddhists", re.I)
+# Cleveland and the Met say where an object was made ("Northern India, Pahari kingdoms", "China, Ming dynasty"), and
+# art from outside South Asia is never wanted. Commons doesn't say, so its files go by their titles alone.
+SOUTH_ASIA = re.compile(r"india|nepal|pakistan|bangladesh|sri lanka|ceylon|deccan|kashmir|bengal|rajasthan|punjab|"
+                        r"pahari|tamil|mughal|rajput|gandhara", re.I)
 MET_GAP = 1.0
 MET_SEARCHES = 12
 _met_lock = threading.Lock()
@@ -159,7 +173,12 @@ def _search(term: str) -> list[dict]:
         except (requests.RequestException, ValueError, KeyError) as err:
             log.info("%s search for %r failed: %s", find.__name__, term, str(err)[:120])
     return [h for h in hits if h["allowed"] and h.get("thumb") and h.get("url")
-            and int(h.get("height") or MIN_HEIGHT) >= MIN_HEIGHT and not h["url"].lower().endswith(_NOT_PICTURES)]
+            and int(h.get("height") or MIN_HEIGHT) >= MIN_HEIGHT and not h["url"].lower().endswith(_NOT_PICTURES)
+            and not other_faith(h.get("title") or "") and (not h.get("culture") or SOUTH_ASIA.search(h["culture"]))]
+
+
+def other_faith(title: str) -> bool:
+    return bool(OTHER_FAITH.search(NOT_OTHER_FAITH.sub("", title)))
 
 
 def own_lines(beats: list[dict]) -> list[int]:
