@@ -16,9 +16,9 @@ Before it starts a new story, a Reel the judge failed on its pictures alone goes
 With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run. When
 BACKLOG_LOW or fewer stories the writer can read are left, reel_backlog adds new ones that check out.
 
-The state (each Reel's progress and failures, Reels made per day, the quota pause, alerts sent) is kept by the run
-(content/instagram/automation/factory.json on CircleCI); `work` reads and writes it as the JSON file the run hands
-over. A FACTORY_PAUSE file next to the backlog stops the factory.
+The state (each Reel's progress and failures, set-aside Reels whose number a later story took, Reels made per day,
+the quota pause, alerts sent) is kept by the run (content/instagram/automation/factory.json on CircleCI); `work`
+reads and writes it as the JSON file the run hands over. A FACTORY_PAUSE file next to the backlog stops the factory.
 
     python -m ytc.reel_factory work --state STATE.json [--force] [--until ISO]   (on a checkout: one run's step)
     python -m ytc.reel_factory status --state STATE.json                         (supply and decisions; changes nothing)
@@ -57,7 +57,8 @@ TRANSIENT_GIVE_UP = 8
 BACKLOG_LOW = 4
 STUCK = timedelta(days=5)
 RESET = (12, 40)
-QUOTA = re.compile(r"OutOfQuota|free quota left today|RESOURCE_EXHAUSTED", re.I)
+# Gemini TTS names only the quota it ran out of (tts.py: "HTTP 429 GenerateRequestsPerDayPerProjectPerModel-FreeTier").
+QUOTA = re.compile(r"OutOfQuota|free quota left today|RESOURCE_EXHAUSTED|PerDay", re.I)
 # The paid project's prepaid credits ran out (llm.OutOfCredits, HTTP 402). Nothing answers until the owner adds
 # credits, which can be any time, so the factory looks again after CREDITS_WAIT rather than at the quota's reset.
 CREDITS = re.compile(r"OutOfCredits|Payment Required", re.I)
@@ -476,6 +477,10 @@ def work(state_path: Path, logs: Path, force: bool = False, media: Path | None =
         done["requeued"] = requeued
     if reel:
         done["reel"] = reel
+        if done["decision"] == "starting" and state["reels"].get(reel, {}).get("set_aside"):
+            # A Reel set aside after its story was written leaves no folder in git, so the next story takes its number.
+            # Under the old record that story would get no tries of its own, and a pause of it would never resume.
+            state.setdefault("aside", []).append({"reel": reel, **state["reels"].pop(reel)})
         if done["decision"] == "picturing again":
             try:
                 done["sent_back"] = {"left_out": send_back(reel, state)}
