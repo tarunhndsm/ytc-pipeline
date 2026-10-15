@@ -59,6 +59,9 @@ MIN_COVERAGE = 0.75
 # said "कैसी रही ये जनरेशन?" (1.3 s) and laughed between two lines.
 MAX_UNSCRIPTED = 1.0
 TAKES = 3
+# Beside narration.wav: the narration_key it was read from (reel_rescue writes it when it brings a render's
+# narration back to render new pictures).
+KEPT_NARRATION = "narration.json"
 # A line the recognizer heard less of than this is listed for the reviewer to listen to.
 SPEECH_CLEAR = 0.9
 # A beat's picture comes in this long before its first word.
@@ -371,9 +374,18 @@ def _tempo(audio: np.ndarray, speed: float) -> np.ndarray:
         return sf.read(faster, dtype="float32")[0]
 
 
+def narration_key(spec: ShortSpec) -> dict:
+    """What a kept take or narration must have been read from to be used again: the script and the voice."""
+    # Without respellings or a language, a voice still matches the takes kept before those fields existed.
+    unset = {name for name in ("say", "language", "max_pause") if not getattr(spec.voice, name)}
+    return {"script": "\n".join(beat.text for beat in spec.beats),
+            **spec.voice.model_dump(exclude={"lead_in", *unset})}
+
+
 def _gemini(spec: ShortSpec, out_dir: Path) -> Narration:
     """The best of up to TAKES readings. The chosen take is kept (take.wav) and used again while the script and
-    voice stay the same, so re-rendering the pictures doesn't change the performance."""
+    voice stay the same, so re-rendering the pictures doesn't change the performance. A finished narration.wav that
+    KEPT_NARRATION says was read from this script and voice is used as it is, with no Gemini call."""
     script = "\n".join(beat.text for beat in spec.beats)
     spoken = script
     for word, respelled in spec.voice.say.items():
@@ -382,9 +394,7 @@ def _gemini(spec: ShortSpec, out_dir: Path) -> Narration:
     language = WHISPER_LANGUAGE.get(spec.voice.lang_code, "en")
     out_dir.mkdir(parents=True, exist_ok=True)
     wav_path, take_path, take_json = out_dir / "narration.wav", out_dir / "take.wav", out_dir / "take.json"
-    # Without respellings or a language, a voice still matches the takes kept before those fields existed.
-    unset = {name for name in ("say", "language", "max_pause") if not getattr(spec.voice, name)}
-    wanted = {"script": script, **spec.voice.model_dump(exclude={"lead_in", *unset})}
+    wanted = narration_key(spec)
     lead_in = spec.voice.lead_in
     saved = json.loads(take_json.read_text(encoding="utf-8")) if take_json.exists() else {}
     # "served_by" names the model that read the kept take; it isn't part of what the take must match. Nor are the
@@ -393,6 +403,15 @@ def _gemini(spec: ShortSpec, out_dir: Path) -> Narration:
     played_as = ("speed", "max_pause")
     kept = take_path.exists() and {k: v for k, v in saved.items() if k not in played_as} == \
         {k: v for k, v in wanted.items() if k not in played_as}
+    finished = out_dir / KEPT_NARRATION
+    if not kept and wav_path.exists() and finished.exists() and \
+            json.loads(finished.read_text(encoding="utf-8")) == wanted:
+        audio = sf.read(wav_path, dtype="float32")[0]
+        words, coverage = _align(tokens, _heard(wav_path, language))
+        log.info("%s: the kept narration; Whisper heard %s of each line", spec.id, " ".join(f"{c:.0%}" for c in coverage))
+        if min(coverage) < MIN_COVERAGE:
+            log.warning("%s: in the kept narration Whisper heard only %.0f%% of one line", spec.id, 100 * min(coverage))
+        return _narration(spec, out_dir, wav_path, audio, words, coverage, language)
     best: tuple[np.ndarray, np.ndarray, list[Word], list[float], str] | None = None
     for take in range(1, TAKES + 1):
         if kept and take == 1:
@@ -426,13 +445,19 @@ def _gemini(spec: ShortSpec, out_dir: Path) -> Narration:
     if best is None:
         raise RuntimeError(f"{spec.id}: every take said things that aren't in the script")
     raw, audio, words, coverage, served = best
-    # Whisper stamps the first word from the start of the file, inside the lead-in silence.
-    words = [Word(w.text, max(w.start, lead_in), max(w.end, lead_in + 0.05), w.beat) for w in words]
     if min(coverage) < MIN_COVERAGE:
         log.warning("%s: in the best of %d takes Whisper heard only %.0f%% of one line", spec.id, TAKES, 100 * min(coverage))
     sf.write(wav_path, audio, SAMPLE_RATE)
     sf.write(take_path, raw, SAMPLE_RATE)
     take_json.write_text(json.dumps({**wanted, "served_by": served}, ensure_ascii=False, indent=1), encoding="utf-8")
+    return _narration(spec, out_dir, wav_path, audio, words, coverage, language)
+
+
+def _narration(spec: ShortSpec, out_dir: Path, wav_path: Path, audio: np.ndarray, words: list[Word],
+               coverage: list[float], language: str) -> Narration:
+    lead_in = spec.voice.lead_in
+    # Whisper stamps the first word from the start of the file, inside the lead-in silence.
+    words = [Word(w.text, max(w.start, lead_in), max(w.end, lead_in + 0.05), w.beat) for w in words]
     # check.speech's English recognizer can't judge Hindi; this takes its place (check._saved_speech).
     if language != "en":
         (out_dir / "speech.json").write_text(json.dumps(speech_report(coverage), indent=2), encoding="utf-8")

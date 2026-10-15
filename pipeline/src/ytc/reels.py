@@ -29,6 +29,9 @@ PASS_SCORE = 7
 # A Reel runs until its story ends, up to this many seconds.
 LONGEST = 90
 REVIEW = "review.json"
+# A Reel the judge failed on its pictures alone, made ready to go out without the pictures it found fault with
+# (reel_rescue): the runs go by this record instead of the review.
+RESCUE = "work/rescue.json"
 # Independent judgments averaged per Reel: one Gemini review of the same Reel can move by 5 points.
 RUNS = 2
 # A new Reel must reach the mean total of this many recent Reels. Held to the last Reel's total alone, one lucky
@@ -70,8 +73,10 @@ included; a long line can cut to a close-up, so it has two), the automatic check
 The page runs a quiz from Reel to Reel, which its viewers expect, since comments carry a Reel on Instagram: a line
 marked "quiz answer" gives the answer to the question the previous Reel asked, over that Reel's first picture, and
 the line marked "quiz question" asks this Reel's question for the comments over line 1's picture, promising the
-answer and a shout-out in the next Reel. Judge those lines on being short, clear and inviting (under retention and
-accuracy); judge payoff and ending on the story's last line, the one before the question. A title with "भाग" is one
+answer and a shout-out in the next Reel. Both pictures are there on purpose: the answer's belongs to the previous
+Reel's story, so don't mark it down as off-topic or shown again, in visuals or in frames. Judge those lines on being
+short, clear and inviting (under retention and accuracy); judge payoff and ending on the story's last line, the one
+before the question. A title with "भाग" is one
 part of a series: it must still feel whole, ending on a turn that makes viewers want the next part.
 
 Score each 1 to 10 (10 exceptional, 8 strong, 7 publishable, 6 or lower must be fixed), with a one-line note:
@@ -275,6 +280,12 @@ def bar(exclude: str = "") -> float:
     """The total a new Reel must reach: the mean of the recent Reels' totals."""
     totals = [total(verdict) for _, verdict in recent(exclude)]
     return round(sum(totals) / len(totals), 1) if totals else 0
+
+
+def rescued(folder: Path) -> dict | None:
+    """The Reel's rescue (reel_rescue) once its video is ready to go out, else None."""
+    found = _read(folder / RESCUE)
+    return found if found and found.get("video_sha256") and not found.get("failed") else None
 
 
 def judgments(folder: Path) -> int:

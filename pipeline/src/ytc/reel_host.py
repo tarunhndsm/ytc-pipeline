@@ -358,8 +358,10 @@ def factory(force: bool = False, until: datetime | None = None) -> dict:
             today = f"{datetime.now(reel_cloud.IST):%Y-%m-%d}"
             saved["made"][today] = saved["made"].get(today, 0) + 1
             paths += [f"content/instagram/{reel}", BACKLOG]
-            message = (f"Reel factory: {reel}, {done.get('story', '')}: written, pictured, rendered and checked by QA "
-                       "on CircleCI; the next reel run judges it")
+            message = f"Reel factory: {reel}, {done.get('story', '')}: " + (
+                "rendered again on CircleCI without the pictures the judge faulted; the next reel run books it"
+                if saved["reels"][reel].get("rescue") else
+                "written, pictured, rendered and checked by QA on CircleCI; the next reel run judges it")
         except Exception as err:
             log.exception("shipping %s failed", reel)
             done["errors"].append(f"{reel} was made but not shipped: {err}"[:300])

@@ -589,7 +589,8 @@ def picture(folder: Path) -> Path:
         chosen[1] = chosen.pop(min(chosen))
     own = own_lines(beats)
     missing = [n for n in own if n not in chosen]
-    if 1 in missing or len(missing) > MAX_REUSED:
+    # The factory allows more on a story's last try (reel_factory.LAST_TRY_REUSED).
+    if 1 in missing or len(missing) > int(os.environ.get("YTC_MAX_REUSED") or MAX_REUSED):
         raise LookupError(f"no usable picture for lines {missing}")
     spec = reel_writer.spec_fields(draft)
     shows = {n: n for n in chosen} | {n: 1 for n in range(1, len(beats) + 1) if n not in own}

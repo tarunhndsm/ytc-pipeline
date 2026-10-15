@@ -11,8 +11,10 @@ folder, and the hourly reel_run judges and books it. These steps and the judge s
 (reset 12:30 IST), so a quota error pauses the factory until then instead of counting as a failure, and so does a
 Gemini outage or a network drop, until it has happened TRANSIENT_GIVE_UP times to the same step. A step that fails
 GIVE_UP times for any other reason sets the Reel aside; a story the writer can't write moves to "## Set aside".
-Before it starts a new story, a Reel the judge failed on its pictures alone goes back to the picture step once
-(send_back), without the pictures the judge found fault with.
+Before it starts a new story, a Reel the judge failed on its pictures alone is rescued (reel_rescue: rendered again
+with its own unfaulted pictures in place of the faulted ones, and booked below the bar), or, when too few of its
+pictures are left for that, goes back to the picture step once (send_back), without the pictures the judge found
+fault with. A rescue step that fails for any reason but an outage sets the Reel aside at once.
 With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run. When
 BACKLOG_LOW or fewer stories the writer can read are left, reel_backlog adds new ones that check out.
 
@@ -39,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import reel_pictures, reel_writer, reels
+from . import reel_pictures, reel_rescue, reel_writer, reels
 
 IST = ZoneInfo("Asia/Kolkata")
 PENDING_MIN = 3
@@ -48,6 +50,9 @@ AHEAD_MIN = 10
 # again. The supply check (PENDING_MIN, AHEAD_MIN) stops the factory well before this once the queue is full.
 DAILY_CAP = 8
 GIVE_UP = 3
+# Lines without a picture of their own the picture step allows on its last try, so the story isn't set aside for
+# want of one more picture (ak041 was made with 4); a Reel the judge then fails on its pictures can still be rescued.
+LAST_TRY_REUSED = 4
 # How long a new story waits for the judge of the Reel whose question it answers, after that Reel was made: one the
 # checks keep from the judge (too long, too loud) would otherwise stop the factory.
 JUDGE_WAIT = timedelta(hours=6)
@@ -67,14 +72,14 @@ TRANSIENT = re.compile(r"Overloaded|\b503\b|UNAVAILABLE|high demand|Read timed o
                        r"ClientConnector|ConnectionError|Connection reset|RemoteDisconnected|"
                        r"Temporary failure in name resolution|SSLError", re.I)
 # A judge's complaint about a picture shown again, which the picture step's rules settle, not about the picture itself.
-SHOWN_AGAIN = re.compile(r"same (image|picture)|repeat|repetit|again|reuse|consecutive", re.I)
+SHOWN_AGAIN = reel_rescue.SHOWN_AGAIN
 # Where a Reel sent back to the picture step keeps its old picks, QA, render and review, out of git.
 REDO = "work/redo"
 PAUSE = reels.REELS / "FACTORY_PAUSE"
 BACKLOG = reels.REELS / "backlog.md"
 RECORD = "instagram.json"
 # Minutes a step needs on CircleCI's 4-CPU machine; with --until, a step isn't started with less time left.
-NEEDS = {"write": 10, "pictures": 20, "render": 30, "qa": 40}
+NEEDS = {"write": 10, "pictures": 20, "render": 30, "qa": 40, "rescue": 5, "seal": 5}
 
 
 def _read(path: Path):
@@ -296,16 +301,24 @@ def _run(command: list[str], log: Path, timeout: int) -> tuple[int, str]:
     return code, (f"timed out after {timeout // 60} min; " if code == -1 else "") + text[-2500:]
 
 
-def _steps(reel: str) -> list[tuple[str, object, list[str], int]]:
+def _steps(reel: str, rescuing: bool = False) -> list[tuple[str, object, list[str], int]]:
     folder = reels.REELS / reel
     video = folder / f"{reel}.mp4"
     py = [sys.executable, "-u", "-m"]
+    render = ("render", lambda: video.exists() and video.stat().st_mtime >= (folder / "short.yaml").stat().st_mtime,
+              [*py, "ytc.reel_tools", "render", str(folder / "short.yaml")], 90 * 60)
+    if rescuing:
+        return [
+            ("rescue", lambda: (folder / reels.RESCUE).exists(), [*py, "ytc.reel_rescue", "prepare", str(folder)],
+             15 * 60),
+            render,
+            ("seal", lambda: bool(reels.rescued(folder)), [*py, "ytc.reel_rescue", "seal", str(folder)], 15 * 60),
+        ]
     return [
         ("write", lambda: (folder / reel_writer.SCRIPT).exists(), [*py, "ytc.reel_writer", "write", "--id", reel],
          30 * 60),
         ("pictures", lambda: (folder / "short.yaml").exists(), [*py, "ytc.reel_pictures", str(folder)], 60 * 60),
-        ("render", lambda: video.exists() and video.stat().st_mtime >= (folder / "short.yaml").stat().st_mtime,
-         [*py, "ytc.reel_tools", "render", str(folder / "short.yaml")], 90 * 60),
+        render,
         ("qa", lambda: (_read(folder / "work" / "qa.json") or {}).get("finished", False),
          [*py, "ytc.reel_qa", str(folder)], 120 * 60),
     ]
@@ -318,7 +331,7 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
     mine = state["reels"].setdefault(reel, {"started": datetime.now(IST).isoformat(timespec="seconds"), "fails": {}})
     if (script := _read(folder / reel_writer.SCRIPT)) and script.get("row"):
         move_row(reel, script["row"])  # a resumed Reel's row, moved on a clone that was never pushed
-    for step, finished, command, timeout in _steps(reel):
+    for step, finished, command, timeout in _steps(reel, bool(mine.get("rescue"))):
         if finished():
             continue
         cut = False
@@ -333,10 +346,13 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
         usage_log = logs / f"{reel}_{step}_usage.jsonl"
         usage_log.unlink(missing_ok=True)
         os.environ["YTC_USAGE_LOG"] = str(usage_log)
+        if step == "pictures" and mine["fails"].get(step, 0) >= GIVE_UP - 1:
+            os.environ["YTC_MAX_REUSED"] = str(LAST_TRY_REUSED)
         try:
             code, tail = _run(command, logs / f"{reel}_{step}.log", timeout)
         finally:
             os.environ.pop("YTC_USAGE_LOG", None)
+            os.environ.pop("YTC_MAX_REUSED", None)
         # Every try counts, failed ones too: they cost the same.
         spent = _spend(usage_log)
         _add_spend(mine.setdefault("usage", {}).setdefault(step, {}), spent)
@@ -378,7 +394,9 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             transient[step] = transient.get(step, 0) + 1
             done["why"] = f"{step} hit an outage or network error ({transient[step]} of {TRANSIENT_GIVE_UP}): {last}"
             return "failed"
-        mine["fails"][step] = mine["fails"].get(step, 0) + 1
+        # A rescue that can't be done (too few pictures left, a render that fails its checks) won't be done by trying
+        # again, and the new stories would wait behind it.
+        mine["fails"][step] = GIVE_UP if step in ("rescue", "seal") else mine["fails"].get(step, 0) + 1
         done["why"] = f"{step} failed ({mine['fails'][step]} of {GIVE_UP}): {last}"
         if mine["fails"][step] < GIVE_UP:
             return "failed"
@@ -421,7 +439,9 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
         return None, done | {"decision": f"already made {DAILY_CAP} today"}
     if found["unfinished"]:
         return found["unfinished"][0], done | {"decision": "resuming"}
-    # New pictures cost less than a new story, and the rest of the Reel already passed.
+    # A rescue costs no model call and goes out; new pictures cost less than a new story, and the rest passed.
+    if rescues := reel_rescue.to_render(found["failed"], stored):
+        return rescues[0], done | {"decision": "rescuing"}
     for reel in found["failed"]:
         if _pictures_failed(reels.REELS / reel, state["reels"].get(reel, {})):
             return reel, done | {"decision": "picturing again"}
@@ -481,6 +501,12 @@ def work(state_path: Path, logs: Path, force: bool = False, media: Path | None =
             # A Reel set aside after its story was written leaves no folder in git, so the next story takes its number.
             # Under the old record that story would get no tries of its own, and a pause of it would never resume.
             state.setdefault("aside", []).append({"reel": reel, **state["reels"].pop(reel)})
+        if done["decision"] == "rescuing":
+            mine = state["reels"].setdefault(reel, {})
+            mine.pop("pushed", None)
+            mine.update(fails={}, transient={}, rescue={"at": datetime.now(IST).isoformat(timespec="seconds")})
+            mine.setdefault("story", ((_read(reels.REELS / reel / reel_writer.SCRIPT) or {}).get("row") or {}).get(
+                "story", ""))
         if done["decision"] == "picturing again":
             try:
                 done["sent_back"] = {"left_out": send_back(reel, state)}

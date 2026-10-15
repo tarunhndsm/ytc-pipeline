@@ -605,18 +605,25 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
                chain: dict | None = None) -> None:
     """Room the Reels that reach the bar leave in the queue goes to the ones the bar alone holds (every score at
     least reels.PASS_SCORE), best first: the owner wants the queue kept full, and a slot without a Reel costs the page
-    more than a Reel under the recent ones' mean. Their records say so, and they don't count toward the bar. Reels
-    of the quiz chain keep its order (`chain`: work's booked, gone and unsent)."""
-    from . import instagram, publish, reels
+    more than a Reel under the recent ones' mean. Their records say so, and they don't count toward the bar. After
+    them come the Reels rescued without the pictures the judge faulted (reel_rescue), best first. Reels of the quiz
+    chain keep its order (`chain`: work's booked, gone and unsent)."""
+    from . import instagram, publish, reel_rescue, reels
+
+    def rank(folder: Path) -> tuple[int, float] | None:
+        if (folder / instagram.RECORD).exists() or folder.name in done["scheduled"] or \
+                folder.name in chain["unsent"] or not (folder / f"{folder.name}.mp4").exists():
+            return None
+        rescued = bool(reels.rescued(folder))
+        if reel_rescue.unshippable(folder) if rescued else reels.unshippable(folder, with_bar=False):
+            return None
+        return int(rescued), -reels._read(folder / reels.REVIEW)["total"]
 
     chain = chain or {"booked": {}, "gone": set(), "unsent": set()}
-    held = sorted(((reels._read(folder / reels.REVIEW)["total"], folder)
-                   for folder in sorted(p.parent for p in reels.REELS.glob("ak*/short.yaml"))
-                   if not (folder / instagram.RECORD).exists() and folder.name not in done["scheduled"]
-                   and folder.name not in chain["unsent"]
-                   and (folder / f"{folder.name}.mp4").exists() and not reels.unshippable(folder, with_bar=False)),
-                  key=lambda h: h[0], reverse=True)
-    for total, folder in held:
+    held = sorted((key, folder) for folder in sorted(p.parent for p in reels.REELS.glob("ak*/short.yaml"))
+                  if (key := rank(folder)))
+    for (rescued, minus_total), folder in held:
+        total = -minus_total
         if len({d for d in _dues() if d > now} | set(planned)) >= QUEUE:
             return
         after, why = _after(folder, chain["booked"], chain["gone"])
@@ -627,9 +634,10 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
                 return
             continue
         slot, bar = slots[0], reels.bar(folder.name)
+        note = {"below_bar": bar} | ({"rescue": reel_rescue.note(folder)} if rescued else {})
         if not dry:
             try:
-                instagram.schedule(folder / "short.yaml", slot, {"below_bar": bar})
+                instagram.schedule(folder / "short.yaml", slot, note)
             except publish.BufferBusy as err:
                 done["held"][folder.name] = f"would fill the queue; Buffer is busy ({err})"
                 return
@@ -641,7 +649,8 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
         chain["booked"][folder.name] = slot
         done["held"].pop(folder.name, None)
         done["scheduled"][folder.name] = (f"{'would go out ' if dry else ''}{slot:%a %d %b %H:%M} IST, below the bar "
-                                          f"({total} < {bar}) to keep the queue full")
+                                          f"({total} < {bar}){f', {reel_rescue.told(folder)},' if rescued else ''}"
+                                          " to keep the queue full")
 
 
 def idle_days(now: datetime, planned: list[datetime], youtube_planned: list[datetime]) -> list[str]:
@@ -792,11 +801,11 @@ def unhost_sent(now: datetime, done: dict, dry: bool = False) -> None:
 
 def work(dry: bool = False) -> dict:
     """Review each rendered Reel still missing judgments and schedule the ones that pass, in id order."""
-    from . import instagram, llm, publish, reels
+    from . import instagram, llm, publish, reel_rescue, reels
 
     now = datetime.now(timezone.utc)
     done: dict = {"reviewed": {}, "scheduled": {}, "mirrored": {}, "facebook": {}, "moved": {}, "held": {},
-                  "resent": {}, "unhosted": {}, "errors": []}
+                  "resent": {}, "unhosted": {}, "rescued": {}, "errors": []}
     judging, scheduling, planned = True, True, []
     try:
         buffered = instagram.posts_by_reel(instagram._env("IG_BUFFER_CHANNEL_ID"))
@@ -829,7 +838,9 @@ def work(dry: bool = False) -> dict:
         if not (folder / f"{reel}.mp4").exists():
             done["held"][reel] = "its render isn't in the reels volume"
             continue
-        if reels.judgments(folder) < reels.RUNS:
+        # A rescued Reel isn't judged again: its rescue only took out pictures the judge found fault with.
+        rescue = reels.rescued(folder)
+        if not rescue and reels.judgments(folder) < reels.RUNS:
             if dry or not judging:
                 done["held"][reel] = "would be reviewed" if dry else "waiting for the judge's quota"
                 continue
@@ -851,7 +862,15 @@ def work(dry: bool = False) -> dict:
                 done["errors"].append(f"reviewing {reel} failed: {err}"[:300])
                 continue
         note = None
-        if why := reels.unshippable(folder):
+        if rescue:
+            if why := reel_rescue.unshippable(folder):
+                done["held"][reel] = why
+                continue
+            if reel not in needed:
+                done["held"][reel] = "rescued; it fills the queue after the Reels whose every score passed"
+                continue
+            note = {"below_bar": reels.bar(reel), "rescue": reel_rescue.note(folder)}
+        elif why := reels.unshippable(folder):
             # A Reel whose question a later one answers goes out with every score passing, under the bar or not.
             if reel not in needed or reels.unshippable(folder, with_bar=False):
                 done["held"][reel] = why
@@ -873,7 +892,8 @@ def work(dry: bool = False) -> dict:
         slot = slots[0]
         planned.append(slot)
         chain["booked"][reel] = slot
-        below = f", below the bar ({note['below_bar']}) since a later Reel answers its question" if note else ""
+        below = ((f", {reel_rescue.told(folder)}," if "rescue" in note else f", below the bar ({note['below_bar']})")
+                 + " since a later Reel answers its question") if note else ""
         if dry:
             done["scheduled"][reel] = f"would go out {slot:%a %d %b %H:%M} IST{below}"
             continue
@@ -888,6 +908,11 @@ def work(dry: bool = False) -> dict:
             log.exception("scheduling %s failed", reel)
             chain["booked"].pop(reel)
             done["errors"].append(f"scheduling {reel} failed: {err}"[:300])
+    for folder in sorted(p.parent for p in reels.REELS.glob("ak*/short.yaml")):
+        if dry and not reel_rescue.why_not(folder) and not reel_rescue.faulted(folder):
+            done["rescued"][folder.name] = "would be rescued as it is"
+        elif not dry and reel_rescue.mark(folder):
+            done["rescued"][folder.name] = "as it is: the judge found no fault with its pictures, only repeats"
     if scheduling:
         fill_queue(now, done, planned, dry, chain)
     youtube_planned: list[datetime] = []
