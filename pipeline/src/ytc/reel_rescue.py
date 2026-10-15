@@ -159,12 +159,13 @@ def to_render(failed: list[str], stored: set[str] | None = None) -> list[str]:
     found = []
     for reel in failed:
         folder = reels.REELS / reel
-        if (stored is not None and reel not in stored) or why_not(folder) or not faulted(folder):
-            continue
+        # One odd Reel mustn't stop the factory's run.
         try:
+            if (stored is not None and reel not in stored) or why_not(folder) or not faulted(folder):
+                continue
             found.append((-len(plan(folder)[1]), -int(re.sub(r"\D", "", reel) or 0), reel))
-        except (ValueError, KeyError, OSError) as err:
-            log.info("%s can't be rescued: %s", reel, err)
+        except Exception as err:
+            log.info("%s can't be rescued: %s: %s", reel, type(err).__name__, err)
     return [reel for *_, reel in sorted(found)]
 
 

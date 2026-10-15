@@ -909,10 +909,14 @@ def work(dry: bool = False) -> dict:
             chain["booked"].pop(reel)
             done["errors"].append(f"scheduling {reel} failed: {err}"[:300])
     for folder in sorted(p.parent for p in reels.REELS.glob("ak*/short.yaml")):
-        if dry and not reel_rescue.why_not(folder) and not reel_rescue.faulted(folder):
-            done["rescued"][folder.name] = "would be rescued as it is"
-        elif not dry and reel_rescue.mark(folder):
-            done["rescued"][folder.name] = "as it is: the judge found no fault with its pictures, only repeats"
+        try:
+            if dry and not reel_rescue.why_not(folder) and not reel_rescue.faulted(folder):
+                done["rescued"][folder.name] = "would be rescued as it is"
+            elif not dry and reel_rescue.mark(folder):
+                done["rescued"][folder.name] = "as it is: the judge found no fault with its pictures, only repeats"
+        except Exception as err:
+            log.exception("rescuing %s failed", folder.name)
+            done["errors"].append(f"rescuing {folder.name} failed: {err}"[:300])
     if scheduling:
         fill_queue(now, done, planned, dry, chain)
     youtube_planned: list[datetime] = []
