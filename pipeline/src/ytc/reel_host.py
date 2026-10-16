@@ -224,11 +224,19 @@ def bring_media(store: reel_media.Store) -> list[str]:
 
 
 def prune(store: reel_media.Store, now: datetime) -> list[str]:
-    """Drop the renders of Reels whose slot passed KEEP ago, unless their YouTube cut is still to go out."""
+    """Drop the renders of Reels whose slot passed KEEP ago, unless their YouTube cut is still to go out; a Reel that
+    may go out again one day keeps its render in reel_repost's stock."""
+    from . import reel_repost
+
     gone = []
     for reel, assets in stored_media(store).items():
         due = reel_cloud._due(CONTENT / reel)
         if due and due < now - reel_cloud.KEEP and not _cut_waits(assets, CONTENT / reel):
+            try:
+                reel_repost.keep(store, CONTENT / reel)
+            except Exception as err:
+                log.warning("couldn't stock %s's render before dropping it; trying next run: %s", reel, err)
+                continue
             store.drop(f"media {reel}")
             gone.append(reel)
     return gone

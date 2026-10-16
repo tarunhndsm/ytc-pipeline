@@ -97,6 +97,8 @@ LOW = 3
 # He hears of a thin queue or a day without a post only once no Reel has been booked for this long: while Reels are
 # booked every few hours the queue refills by itself, and the alert only worried him (17 Oct).
 STALLED_AFTER = timedelta(hours=8)
+# While older Reels can go out again (reel_repost), no day goes without a post, so he hears only of a longer stall.
+STALLED_COVERED = timedelta(hours=48)
 PROBLEM_HOURS = 3
 # A post Buffer failed goes out again once, this long after the run that finds it; one due longer ago than
 # RESEND_WITHIN is left to the owner.
@@ -217,9 +219,10 @@ def _facebook_after(folder: Path, sent: dict[str, datetime], start: datetime) ->
 
 
 def _dues(youtube: bool = False) -> list[datetime]:
-    from . import reels
+    from . import reel_repost, reels
 
-    return sorted(due for folder in reels.REELS.iterdir() if folder.is_dir() and (due := _due(folder, youtube)))
+    found = [due for folder in reels.REELS.iterdir() if folder.is_dir() and (due := _due(folder, youtube))]
+    return sorted(found if youtube else found + reel_repost.dues())
 
 
 def _minute(when: datetime) -> datetime:
@@ -656,10 +659,15 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
                                           " to keep the queue full")
 
 
-def idle_days(now: datetime, planned: list[datetime], youtube_planned: list[datetime]) -> list[str]:
-    """The next two days (from today while it still has a slot), on each channel, when nothing is due there."""
+def idle_days(now: datetime, planned: list[datetime], youtube_planned: list[datetime],
+              reposts: bool = False) -> list[str]:
+    """The next two days (from today while it still has a slot), on each channel, when nothing is due there. With
+    `reposts` (reel_repost.ready), Instagram's days are covered: an older Reel goes out again a few hours ahead."""
     idle = []
-    for name, dues in (("Instagram", _dues() + planned), ("YouTube", _dues(youtube=True) + youtube_planned)):
+    channels = [("YouTube", _dues(youtube=True) + youtube_planned)]
+    if not reposts:
+        channels.insert(0, ("Instagram", _dues() + planned))
+    for name, dues in channels:
         days = {_minute(when).date() for when in dues}
         idle += [f"nothing on {name} {day:%a %d %b}" for day in _ahead(now, 2) if day not in days]
     return idle
@@ -804,11 +812,11 @@ def unhost_sent(now: datetime, done: dict, dry: bool = False) -> None:
 
 def work(dry: bool = False) -> dict:
     """Review each rendered Reel still missing judgments and schedule the ones that pass, in id order."""
-    from . import instagram, llm, publish, reel_rescue, reels
+    from . import instagram, llm, publish, reel_repost, reel_rescue, reels
 
     now = datetime.now(timezone.utc)
     done: dict = {"reviewed": {}, "scheduled": {}, "mirrored": {}, "facebook": {}, "moved": {}, "held": {},
-                  "resent": {}, "unhosted": {}, "rescued": {}, "errors": []}
+                  "resent": {}, "unhosted": {}, "rescued": {}, "reposted": {}, "errors": []}
     judging, scheduling, planned = True, True, []
     try:
         buffered = instagram.posts_by_reel(instagram._env("IG_BUFFER_CHANNEL_ID"))
@@ -922,6 +930,13 @@ def work(dry: bool = False) -> dict:
             done["errors"].append(f"rescuing {folder.name} failed: {err}"[:300])
     if scheduling:
         fill_queue(now, done, planned, dry, chain)
+        try:
+            reel_repost.fill(now, done, planned, dry)
+        except publish.BufferBusy as err:
+            done["held"]["older Reels"] = f"Buffer is busy ({err})"
+        except Exception as err:
+            log.exception("sending an older Reel out again failed")
+            done["errors"].append(f"sending an older Reel out again failed: {err}"[:300])
     youtube_planned: list[datetime] = []
     if os.environ.get("IG_BUFFER_YOUTUBE_CHANNEL_ID") and scheduling:
         youtube_planned = mirror(now, done, dry)
@@ -953,9 +968,16 @@ def work(dry: bool = False) -> dict:
             done["errors"].append(f"the YouTube shoutouts failed: {err}"[:300])
     try:
         unhost_sent(now, done, dry)
+        reel_repost.unhost(now, done, dry)
     except Exception:
         log.exception("taking sent Reels' videos off Cloudinary failed")
-    done["idle"] = idle_days(now, planned, youtube_planned)
+    try:
+        done["reposts_ready"] = reel_repost.ready(now)
+    except Exception as err:
+        log.exception("checking the older Reels that can go out again failed")
+        done["reposts_ready"] = False
+        done["errors"].append(f"checking the older Reels that can go out again failed: {err}"[:300])
+    done["idle"] = idle_days(now, planned, youtube_planned, done["reposts_ready"])
     upcoming = sorted({d for d in _dues() if d > now} | set(planned))
     done["queue"] = len(upcoming)
     done["last_due"] = f"{upcoming[-1].astimezone(IST):%a %d %b %H:%M} IST" if upcoming else ""
@@ -1070,6 +1092,7 @@ def _message(started: datetime, done: dict, host: str = "Modal") -> str:
     parts += [f"{reel} on YouTube for {when}" for reel, when in done.get("mirrored", {}).items()]
     parts += [f"{reel} on Facebook for {when}" for reel, when in done.get("facebook", {}).items()]
     parts += [f"{reel} on YouTube {how}" for reel, how in done.get("moved", {}).items()]
+    parts += [f"{reel} out again {when}" for reel, when in done.get("reposted", {}).items()]
     return f"reels: {host} run {started:%Y-%m-%d %H:%M} UTC" + (f": {'; '.join(parts)}" if parts else "")
 
 
@@ -1088,9 +1111,12 @@ def _tell_owner(code: int, done: dict, memory=None, host: str = "Modal",
     today = local.date().isoformat()
     held = "; ".join(f"{reel}: {why}" for reel, why in done.get("held", {}).items()) or "nothing is rendered"
     last = done.get("last_booked")
-    if last and datetime.now(timezone.utc) - datetime.fromisoformat(last) <= STALLED_AFTER:
+    quiet = STALLED_COVERED if done.get("reposts_ready") else STALLED_AFTER
+    if last and datetime.now(timezone.utc) - datetime.fromisoformat(last) <= quiet:
         return
-    since = f" Nothing booked since {datetime.fromisoformat(last).astimezone(IST):%a %d %b %H:%M} IST." if last else ""
+    since = f" Nothing new booked since {datetime.fromisoformat(last).astimezone(IST):%a %d %b %H:%M} IST." if last else ""
+    if done.get("reposts_ready"):
+        since += " Older Reels go out again on Instagram and Facebook meanwhile."
     if "queue" in done and done["queue"] < LOW and memory.get("low-queue") != today:
         _alert(f"Only {done['queue']} Reel(s) left to go out"
                + (f", the last on {done['last_due']}" if done["last_due"] else "") + f".{since} Waiting: {held}"[:700])
