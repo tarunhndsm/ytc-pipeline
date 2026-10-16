@@ -250,8 +250,7 @@ def waits_for_judge(reel: str, state: dict, now: datetime) -> str:
     yet, and was made less than JUDGE_WAIT ago. Written now, it might answer a question no viewer is asked."""
     if not (before := reel_writer.asked_before(reel)) or (before[0] / RECORD).exists():
         return ""
-    review = _read(before[0] / reels.REVIEW) or {}
-    if sum(r.get("judge") == reels.JUDGE for r in review.get("runs") or []) >= reels.RUNS:
+    if reels.judged(_read(before[0] / reels.REVIEW)) >= reels.RUNS:
         return ""
     pushed = (state["reels"].get(before[0].name) or {}).get("pushed")
     if not pushed or now - datetime.fromisoformat(pushed) > JUDGE_WAIT:

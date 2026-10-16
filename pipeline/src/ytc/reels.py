@@ -37,9 +37,17 @@ RUNS = 2
 # A new Reel must reach the mean total of this many recent Reels. Held to the last Reel's total alone, one lucky
 # review raised the bar for every Reel after it.
 BAR_REELS = 5
-# Every review is judged by this one model, because totals from different models aren't comparable and each Reel
-# is held to the recent ones' totals. (ak001 and ak003 were judged by other Flash models before it was fixed.)
+# Reviews are judged by this one model where it can, because totals from different models aren't comparable and
+# each Reel is held to the recent ones' totals. (ak001 and ak003 were judged by other Flash models before it was
+# fixed.)
 JUDGE = "gemini-3-flash-preview"
+# When it can't answer (its 20 free judgments a day are spent, or Google retires it), the other Flash models judge
+# in its place, held to the scores alone: only the judge's totals set the bar. Not Flash Lite, which scored ak054
+# 9 or 10 on everything, a Mughal emperor's portrait in the story of Shabari included.
+JUDGES = (JUDGE, *(m for m in llm.FLASH if m != JUDGE))
+# A Reel whose review Gemini's safety filter refuses even without its caption and the previous Reel (ak053, a
+# mother looking into the infant Krishna's mouth): it can't be judged, so it doesn't go out and the quiz moves on.
+BLOCKED = "work/blocked.json"
 # What each judgment keeps; the verdict's scores are their means.
 RUN_KEYS = ("judge", "scores", "notes", "frames", "speech", "rewrite", "better_than_last", "worse_than_last", "next_time")
 # How each shot moves, as the reviewer is told (it sees one still frame per shot).
@@ -137,7 +145,12 @@ def _earlier_runs(verdict: dict | None, video_sha: str) -> list[dict]:
     if not verdict or verdict.get("video_sha256") != video_sha:
         return []
     runs = verdict.get("runs") or [{k: verdict[k] for k in RUN_KEYS if k in verdict}]
-    return [r for r in runs if r.get("judge") == JUDGE]
+    return [r for r in runs if r.get("judge") in JUDGES]
+
+
+def judged(verdict: dict | None) -> int:
+    """How many judgments by JUDGES a review has."""
+    return sum(r.get("judge") in JUDGES for r in (verdict or {}).get("runs") or [])
 
 
 def _combine(runs: list[dict]) -> dict:
@@ -213,20 +226,62 @@ class Unfit(Exception):
     """A Reel its automatic checks already fail, so no review could pass it."""
 
 
+def blocked(folder: Path) -> str:
+    """Why Gemini won't judge a Reel (BLOCKED), or ""."""
+    return (_read(folder / BLOCKED) or {}).get("reason", "")
+
+
 def review(folder: Path, runs: int = RUNS) -> dict:
     """Judge a rendered Reel with a Gemini model that watches the frames and listens to the audio, `runs` times
     independently, keeping earlier judgments of the same video."""
     spec = ShortSpec.load(folder / "short.yaml")
     video = folder / f"{spec.id}.mp4"
+    if why := blocked(folder):
+        raise Unfit(why)
     video_sha = sha256(video)
     done = _earlier_runs(_read(folder / REVIEW), video_sha)
     result = check.check(video, longest=LONGEST)
     if result["warnings"]:
         # The judge's daily quota is small; it goes to Reels that can still pass.
         raise Unfit("; ".join(result["warnings"]))
-    manifest = _read(folder / "work" / "manifest.json")
-    parts: list = [REVIEW_PROMPT.format(previous=_previous_note(spec.id))]
-    parts.append(f"\nTitle: {spec.title}\nCaption: {spec.description}\nSources: {', '.join(spec.sources)}")
+    parts, lean = _review_parts(spec, video, result), False
+    # Only a Gemini model can listen to the narration, so no backup judges it.
+    fallback, llm.CURSOR_FALLBACK = llm.CURSOR_FALLBACK, False
+    try:
+        while len(done) < runs:
+            before = len(llm.calls)
+            try:
+                run = llm.generate(parts, schema=REVIEW_SCHEMA, models=JUDGES, purpose=f"{spec.id} review")
+            except llm.Blocked as err:
+                if lean:
+                    reason = f"Gemini's safety filter won't judge it, even without its caption ({err})"
+                    (folder / BLOCKED).write_text(json.dumps(
+                        {"reason": reason, "video_sha256": video_sha,
+                         "at": datetime.now(IST).isoformat(timespec="seconds")}, indent=1) + "\n", encoding="utf-8")
+                    raise Unfit(reason) from err
+                # Gemini refused ak053's full prompt every time, though it passed it without the caption or
+                # without the previous Reel's note.
+                log.warning("%s: %s; judging it without its caption and the previous Reel", spec.id, err)
+                parts, lean = _review_parts(spec, video, result, lean=True), True
+                continue
+            usd = round(sum(llm.cost(c) for c in llm.calls[before:]), 4)
+            done.append({k: run[k] for k in RUN_KEYS if k in run} | {"judge": llm.answered_by(), "usd": usd})
+            log.info("%s judgment %d by %s: total %s", spec.id, len(done), llm.answered_by(), total(run))
+            # Saved after each judgment: the next one can fail on the judge's daily quota.
+            _save(folder, done, video_sha, result)
+    finally:
+        llm.CURSOR_FALLBACK = fallback
+    return _save(folder, done, video_sha, result)
+
+
+def _review_parts(spec: ShortSpec, video: Path, result: dict, lean: bool = False) -> list:
+    """The judge's prompt: the brief, the script line by line with its frames, the checks and the audio. Lean, it
+    leaves out the caption and the previous Reel, which the judge can do without."""
+    manifest = _read(video.parent / "work" / "manifest.json")
+    previous = "The previous Reel is left out of this review." if lean else _previous_note(spec.id)
+    parts: list = [REVIEW_PROMPT.format(previous=previous)]
+    caption = "" if lean else f"\nCaption: {spec.description}"
+    parts.append(f"\nTitle: {spec.title}{caption}\nSources: {', '.join(spec.sources)}")
     if spec.hook_text:
         parts.append(f"On-screen text over line 1: \"{spec.hook_text}\"")
     if spec.answers:
@@ -251,20 +306,7 @@ def review(folder: Path, runs: int = RUNS) -> dict:
         f"{result['true_peak_dbfs']} dBFS; warnings: {'; '.join(result['warnings']) or 'none'}; lines the speech "
         f"recognizer heard poorly: {'; '.join(speech.get('differences', [])) or 'none'}")
     parts += ["\nThe Reel's audio:", _audio(video)]
-    # Only a Gemini model can listen to the narration, so no backup judges it.
-    fallback, llm.CURSOR_FALLBACK = llm.CURSOR_FALLBACK, False
-    try:
-        while len(done) < runs:
-            before = len(llm.calls)
-            run = llm.generate(parts, schema=REVIEW_SCHEMA, models=(JUDGE,), purpose=f"{spec.id} review")
-            usd = round(sum(llm.cost(c) for c in llm.calls[before:]), 4)
-            done.append({k: run[k] for k in RUN_KEYS if k in run} | {"judge": llm.answered_by(), "usd": usd})
-            log.info("%s judgment %d: total %s", spec.id, len(done), total(run))
-            # Saved after each judgment: the next one can fail on the judge's daily quota.
-            _save(folder, done, video_sha, result)
-    finally:
-        llm.CURSOR_FALLBACK = fallback
-    return _save(folder, done, video_sha, result)
+    return parts
 
 
 def _save(folder: Path, runs: list[dict], video_sha: str, result: dict) -> dict:
@@ -289,27 +331,30 @@ def rescued(folder: Path) -> dict | None:
 
 
 def judgments(folder: Path) -> int:
-    """How many judgments by JUDGE the review of a rendered Reel has of its current video."""
+    """How many judgments by JUDGES the review of a rendered Reel has of its current video."""
     spec = ShortSpec.load(folder / "short.yaml")
     return len(_earlier_runs(_read(folder / REVIEW), sha256(folder / f"{spec.id}.mp4")))
 
 
 def passes(verdict: dict, episode_id: str, with_bar: bool = True) -> bool:
+    """Every score reaches PASS_SCORE with clean checks, and with the bar, a review by JUDGE alone reaches it."""
     return (not verdict["check"]["warnings"] and all(score(verdict["scores"], k) >= PASS_SCORE for k in GATE)
-            and (not with_bar or verdict["total"] >= bar(episode_id)))
+            and (not with_bar or verdict.get("judge") != JUDGE or verdict["total"] >= bar(episode_id)))
 
 
 def unshippable(folder: Path, with_bar: bool = True) -> str:
     """Why a rendered Reel can't be scheduled, or "" if it can: it passed review as this exact video. Without the
     bar, a Reel whose every score reaches PASS_SCORE passes."""
     spec = ShortSpec.load(folder / "short.yaml")
+    if why := blocked(folder):
+        return why
     verdict = _read(folder / REVIEW)
     if not verdict:
         return "it has no review"
     if verdict.get("video_sha256") != sha256(folder / f"{spec.id}.mp4"):
         return "the video isn't the one that was reviewed"
-    if (judged := sum(r.get("judge") == JUDGE for r in verdict.get("runs") or [])) < RUNS:
-        return f"its review has {judged} of {RUNS} judgments by {JUDGE}"
+    if (count := judged(verdict)) < RUNS:
+        return f"its review has {count} of {RUNS} judgments"
     if not passes(verdict, spec.id, with_bar):
         return f"its review ({verdict['total']}) doesn't pass; the bar is {bar(spec.id)}"
     return ""

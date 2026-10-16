@@ -96,7 +96,7 @@ def why_not(folder: Path) -> str:
         return "it has a rescue already"
     if not (folder / "short.yaml").exists() or (folder / "instagram.json").exists():
         return "it isn't a made Reel waiting to go out"
-    if not verdict or sum(r.get("judge") == reels.JUDGE for r in verdict.get("runs") or []) < reels.RUNS:
+    if not verdict or reels.judged(verdict) < reels.RUNS:
         return "its review isn't finished"
     if not reel_writer.turned_down(folder):
         return "the judge didn't fail it"

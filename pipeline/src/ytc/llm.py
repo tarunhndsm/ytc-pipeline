@@ -157,6 +157,12 @@ class Overloaded(RuntimeError):
     """Every model with quota left stayed overloaded (5xx) for OVERLOAD_WAIT seconds."""
 
 
+class Blocked(RuntimeError):
+    """Gemini's safety filter refused the prompt itself (promptFeedback.blockReason). It refuses the same prompt on
+    every model and every try, so asking again only spends quota: ak053's review was asked all day, 16 Oct, until
+    the judge's daily quota was gone."""
+
+
 def _key() -> str:
     # Not GEMINI_API_KEY: on the owner's Mac that name holds an unrelated work key.
     if key := os.environ.get("YTC_GEMINI_API_KEY"):
@@ -393,6 +399,8 @@ def _ask(model: str, body: dict, schema: dict | None, purpose: str):
                     "thinking_tokens": usage.get("thoughtsTokenCount"),
                 }
             )
+            if not text.strip() and (blocked := (reply.get("promptFeedback") or {}).get("blockReason")):
+                raise Blocked(f"Gemini {model} blocked the prompt ({blocked})")
             if not text.strip():
                 log.warning("%s returned no text (finish reason %s); retrying", model, candidate.get("finishReason"))
                 failures += 1

@@ -299,11 +299,14 @@ def part_of(row: dict) -> dict | None:
 
 
 def turned_down(folder: Path) -> bool:
-    """Whether the judge has failed a Reel, with all its judgments in, and it wasn't rescued (reel_rescue)."""
+    """Whether the judge has failed a Reel, with all its judgments in, and it wasn't rescued (reel_rescue), or
+    Gemini won't judge it at all."""
     if reels.rescued(folder):
         return False
+    if reels.blocked(folder):
+        return True
     verdict = reels._read(folder / reels.REVIEW)
-    if not verdict or sum(r.get("judge") == reels.JUDGE for r in verdict.get("runs") or []) < reels.RUNS:
+    if not verdict or reels.judged(verdict) < reels.RUNS:
         return False
     try:
         return not reels.passes(verdict, folder.name, with_bar=False)
