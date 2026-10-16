@@ -70,8 +70,15 @@ OTHER_FAITH = re.compile(r"\b(jaina?|jina|mahavira|tirthankara|kalpa[- ]?sutra|p
 NOT_OTHER_FAITH = re.compile(r"myths of the hindus (&|and) buddhists", re.I)
 # Cleveland and the Met say where an object was made ("Northern India, Pahari kingdoms", "China, Ming dynasty"), and
 # art from outside South Asia is never wanted. Commons doesn't say, so its files go by their titles alone.
+# The Art Institute of Chicago names only the region or court ("Jodhpur", "Kerala", "Uttar Pradesh"); those names are
+# whole words, so "Dakota" or "Normandie" don't pass.
 SOUTH_ASIA = re.compile(r"india|nepal|pakistan|bangladesh|sri lanka|ceylon|deccan|kashmir|bengal|rajasthan|punjab|"
-                        r"pahari|tamil|mughal|rajput|gandhara", re.I)
+                        r"pahari|tamil|mughal|rajput|gandhara|"
+                        r"\b(?:jodhpur|jaipur|mewar|marwar|udaipur|bundi|kota|kishangarh|bikaner|malwa|kangra|guler|"
+                        r"basohli|chamba|mandi|nurpur|bilaspur|jammu|garhwal|himachal|uttar pradesh|madhya pradesh|"
+                        r"andhra|telangana|karnataka|kerala|odisha|orissa|gujarat|maharashtra|bihar|assam|hyderabad|"
+                        r"golconda|bijapur|mysore|thanjavur|tanjore|madurai|lucknow|awadh|oudh|murshidabad|patna|"
+                        r"delhi|agra|lahore|sindh|mathura|varanasi|benares|nathdwara|kalighat)\b", re.I)
 MET_GAP = 1.0
 MET_SEARCHES = 12
 _met_lock = threading.Lock()
@@ -167,7 +174,7 @@ def _met(term: str, limit: int) -> list[dict]:
 
 def _search(term: str) -> list[dict]:
     hits = []
-    for find in (reel_tools.cleveland, _met, reel_tools.commons):
+    for find in (reel_tools.cleveland, reel_tools.aic, _met, reel_tools.commons):
         try:
             hits += find(term, PER_SEARCH)
         except (requests.RequestException, ValueError, KeyError) as err:

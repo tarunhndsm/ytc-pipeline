@@ -1,12 +1,12 @@
 """What a brand Reel is made with, on the Mac now and in a studio run on Modal later: finding open-access pictures
-(Cleveland's CC0, the Met's public domain, and Wikimedia Commons files whose license allows commercial reuse without
-share-alike), laying candidates and a spec's crops out on sheets to look at, fetching the source texts, rendering on
-the brand's Gemini project, and checking a render.
+(Cleveland's and the Art Institute of Chicago's CC0, the Met's public domain, and Wikimedia Commons files whose license
+allows commercial reuse without share-alike), laying candidates and a spec's crops out on sheets to look at, fetching
+the source texts, rendering on the brand's Gemini project, and checking a render.
 
     python -m ytc.reel_tools art <query> [--met] [--limit N]
     python -m ytc.reel_tools commons <query> [--limit N]
     python -m ytc.reel_tools credit "<File title>"...
-    python -m ytc.reel_tools sheet <out.jpg> <commons:<File title> | cma:<id> | met:<id>>...
+    python -m ytc.reel_tools sheet <out.jpg> <commons:<File title> | cma:<id> | aic:<id> | met:<id>>...
     python -m ytc.reel_tools crops <short.yaml> <out.jpg>
     python -m ytc.reel_tools fetch <out dir> <url>... [--find word,word]
     python -m ytc.reel_tools render <short.yaml>
@@ -36,6 +36,11 @@ from . import ff, llm, plates, visuals
 
 Image.MAX_IMAGE_PIXELS = None
 CLEVELAND = "https://openaccess-api.clevelandart.org/api/artworks/"
+AIC = "https://api.artic.edu/api/v1/artworks"
+AIC_IIIF = "https://www.artic.edu/iiif/2"
+# The Art Institute's IIIF server serves a public-domain work up to this many pixels a side, never above the original
+# ("!3000,3000"); a width alone above the original is refused (HTTP 403).
+AIC_SIDE = 3000
 MET = "https://collectionapi.metmuseum.org/public/collection/v1"
 # The Met retired v1's search on 1 Oct 2026 (410 Gone); v1.1's returns one page of IDs. Objects are still on v1.
 MET_SEARCH = "https://collectionapi.metmuseum.org/public/collection/v1.1/search"
@@ -62,6 +67,28 @@ def cleveland(query: str, limit: int = 25) -> list[dict]:
                      "height": image.get("height"), "url": image.get("url"), "page": art.get("url"),
                      "thumb": (images.get("web") or {}).get("url"),
                      "license": "CC0", "allowed": True, "source": "The Cleveland Museum of Art"})
+    return hits
+
+
+def aic(query: str, limit: int = 25) -> list[dict]:
+    """The Art Institute of Chicago's public-domain artworks with images (CC0), sized as AIC_SIDE allows; its place of
+    origin is the culture."""
+    found = visuals._get(f"{AIC}/search", params={
+        "q": query, "limit": limit, "query[term][is_public_domain]": "true",
+        "fields": "id,title,image_id,thumbnail,date_display,place_of_origin"}).json()
+    hits = []
+    for art in found.get("data", []):
+        size = art.get("thumbnail") or {}
+        width, height = size.get("width"), size.get("height")
+        if not art.get("image_id") or not width or not height:
+            continue
+        scale = min(1.0, AIC_SIDE / max(width, height))
+        image = f"{AIC_IIIF}/{art['image_id']}/full"
+        hits.append({"ref": f"aic:{art['id']}", "title": art.get("title") or "Untitled", "date": art.get("date_display"),
+                     "culture": art.get("place_of_origin") or "", "width": round(width * scale),
+                     "height": round(height * scale), "url": f"{image}/!{AIC_SIDE},{AIC_SIDE}/0/default.jpg",
+                     "page": f"https://www.artic.edu/artworks/{art['id']}", "thumb": f"{image}/!500,500/0/default.jpg",
+                     "license": "CC0", "allowed": True, "source": "The Art Institute of Chicago"})
     return hits
 
 
@@ -139,6 +166,9 @@ def _preview(ref: str) -> tuple[str, bytes]:
         size = art["images"].get("print") or art["images"]["full"]
         return (f"CMA {key} {art['title'][:40]} {size['width']}x{size['height']}",
                 visuals._get(art["images"]["web"]["url"]).content)
+    if kind == "aic":
+        art = visuals._get(f"{AIC}/{key}", params={"fields": "id,title,image_id"}).json()["data"]
+        return f"AIC {key} {art['title'][:44]}", visuals._get(f"{AIC_IIIF}/{art['image_id']}/full/!500,500/0/default.jpg").content
     obj = visuals._get(f"{MET}/objects/{key}").json()
     return f"MET {key} {obj['title'][:44]}", visuals._get(obj["primaryImageSmall"]).content
 
