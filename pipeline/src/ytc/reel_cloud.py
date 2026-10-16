@@ -981,9 +981,8 @@ def work(dry: bool = False) -> dict:
     upcoming = sorted({d for d in _dues() if d > now} | set(planned))
     done["queue"] = len(upcoming)
     done["last_due"] = f"{upcoming[-1].astimezone(IST):%a %d %b %H:%M} IST" if upcoming else ""
-    booked = [datetime.fromisoformat(record["scheduled_at"]) for path in reels.REELS.glob(f"*/{instagram.RECORD}")
-              if (record := reels._read(path)) and record.get("scheduled_at")]
-    done["last_booked"] = max(booked).isoformat(timespec="seconds") if booked else ""
+    last = reel_repost.last_booked()
+    done["last_booked"] = last.isoformat(timespec="seconds") if last else ""
     return done
 
 

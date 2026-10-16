@@ -411,6 +411,20 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
     return "made"
 
 
+def _stalled(now: datetime) -> bool:
+    """Whether a thin calendar should reach the owner, as the reels run's alerts do (reel_cloud._tell_owner): no Reel
+    booked for STALLED_AFTER, or for STALLED_COVERED while older Reels can go out again (reel_repost)."""
+    from . import reel_cloud, reel_repost
+
+    try:
+        covered = reel_repost.ready(now)
+    except Exception as err:
+        print(f"couldn't check the older Reels that can go out again: {err}", file=sys.stderr)
+        covered = False
+    last = reel_repost.last_booked()
+    return not last or now - last > (reel_cloud.STALLED_COVERED if covered else reel_cloud.STALLED_AFTER)
+
+
 def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
            stored: set[str] | None = None) -> tuple[str | None, dict]:
     """The Reel this run works on (None: nothing to do) and what the run found."""
@@ -423,7 +437,8 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     done["supply"] = {k: v for k, v in found.items() if v}
     days = {_due(_read(reels.REELS / r / RECORD)).astimezone(IST).date() for r in found["booked"]}
     soon = [(now.astimezone(IST) + timedelta(days=d)).date() for d in range(1, 4)]
-    if not found["pending"] and not found["unfinished"] and (empty := [d for d in soon if d not in days]):
+    if (not found["pending"] and not found["unfinished"] and (empty := [d for d in soon if d not in days])
+            and _stalled(now)):
         done["alerts"].append(("dry", f"no Reel is booked for {', '.join(f'{d:%a %d %b}' for d in empty)} and none "
                                "is waiting"))
     if found["stuck"]:

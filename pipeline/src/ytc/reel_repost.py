@@ -111,6 +111,15 @@ def ready(now: datetime) -> bool:
     return ON and bool(candidates(now, ledger(), stocked()))
 
 
+def last_booked() -> datetime | None:
+    """When the newest Reel was booked (not a repost)."""
+    from . import instagram
+
+    booked = [datetime.fromisoformat(record["scheduled_at"]) for path in reels.REELS.glob(f"*/{instagram.RECORD}")
+              if (record := reels._read(path)) and record.get("scheduled_at")]
+    return max(booked, default=None)
+
+
 def slot(now: datetime, taken: set[datetime]) -> datetime | None:
     """The soonest open Instagram slot of a day (today or tomorrow) with fewer than MIN_PER_DAY Reels, once it is
     WITHIN away."""
