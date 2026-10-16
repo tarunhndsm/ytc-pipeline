@@ -110,11 +110,9 @@ def _faulted(folder: Path) -> list[str]:
 def _pictures_failed(folder: Path, mine: dict) -> bool:
     """Whether the judge failed a Reel on its pictures alone, every other score passing, and it hasn't been sent back
     to the picture step before. A Reel that had more lines without a picture of their own than the picture step now
-    allows (ak041, made while it allowed 4) would only fail there. Nor one that answers the same question as a Reel
-    that can go out (ak052, pictured again after ak051 was booked), which never goes out."""
+    allows (ak041, made while it allowed 4) would only fail there."""
     review = _read(folder / reels.REVIEW)
-    if mine.get("redo") or not review or (review.get("check") or {}).get("warnings") or not _judged_and_failed(folder) \
-            or reel_rescue._answered_by(folder):
+    if mine.get("redo") or not review or (review.get("check") or {}).get("warnings") or not _judged_and_failed(folder):
         return False
     try:
         if [k for k in reels.GATE if reels.score(review["scores"], k) < reels.PASS_SCORE] != ["visuals"]:
