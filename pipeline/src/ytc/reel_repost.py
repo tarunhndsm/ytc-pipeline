@@ -32,7 +32,7 @@ from . import reels
 log = logging.getLogger(__name__)
 
 ON = True
-MIN_PER_DAY = 2
+MIN_PER_DAY = 3
 WITHIN = timedelta(hours=4)
 REST = timedelta(days=14)
 EVERY = timedelta(days=30)
