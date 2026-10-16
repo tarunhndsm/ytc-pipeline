@@ -94,6 +94,9 @@ CATCH_UP_DAYS = 4
 CATCH_UP_RESERVE = timedelta(hours=48)
 # Fewer Reels than this left to go out, and the owner hears the queue is running dry.
 LOW = 3
+# He hears of a thin queue or a day without a post only once no Reel has been booked for this long: while Reels are
+# booked every few hours the queue refills by itself, and the alert only worried him (17 Oct).
+STALLED_AFTER = timedelta(hours=8)
 PROBLEM_HOURS = 3
 # A post Buffer failed goes out again once, this long after the run that finds it; one due longer ago than
 # RESEND_WITHIN is left to the owner.
@@ -956,6 +959,9 @@ def work(dry: bool = False) -> dict:
     upcoming = sorted({d for d in _dues() if d > now} | set(planned))
     done["queue"] = len(upcoming)
     done["last_due"] = f"{upcoming[-1].astimezone(IST):%a %d %b %H:%M} IST" if upcoming else ""
+    booked = [datetime.fromisoformat(record["scheduled_at"]) for path in reels.REELS.glob(f"*/{instagram.RECORD}")
+              if (record := reels._read(path)) and record.get("scheduled_at")]
+    done["last_booked"] = max(booked).isoformat(timespec="seconds") if booked else ""
     return done
 
 
@@ -1081,12 +1087,16 @@ def _tell_owner(code: int, done: dict, memory=None, host: str = "Modal",
     local = datetime.now(IST)
     today = local.date().isoformat()
     held = "; ".join(f"{reel}: {why}" for reel, why in done.get("held", {}).items()) or "nothing is rendered"
+    last = done.get("last_booked")
+    if last and datetime.now(timezone.utc) - datetime.fromisoformat(last) <= STALLED_AFTER:
+        return
+    since = f" Nothing booked since {datetime.fromisoformat(last).astimezone(IST):%a %d %b %H:%M} IST." if last else ""
     if "queue" in done and done["queue"] < LOW and memory.get("low-queue") != today:
         _alert(f"Only {done['queue']} Reel(s) left to go out"
-               + (f", the last on {done['last_due']}" if done["last_due"] else "") + f". Waiting: {held}"[:700])
+               + (f", the last on {done['last_due']}" if done["last_due"] else "") + f".{since} Waiting: {held}"[:700])
         memory["low-queue"] = today
     if done.get("idle") and local.hour >= ALERT_FROM and memory.get("idle-day") != today:
-        _alert(f"A day without a post is coming: {'; '.join(done['idle'])}. Waiting: {held}"[:900])
+        _alert(f"A day without a post is coming: {'; '.join(done['idle'])}.{since} Waiting: {held}"[:900])
         memory["idle-day"] = today
 
 
