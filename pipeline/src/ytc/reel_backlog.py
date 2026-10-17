@@ -1,7 +1,7 @@
 """Keep the story backlog from running dry with no one at the keyboard: when few stories the writer can read are left,
 Gemini proposes new ones from the three texts the writer reads, and a story joins the end of "## Next" only when its
-source parses, its pages read (reel_sources, which saves them), the names it gives are in those pages, and it isn't a
-story already made or planned.
+source parses, its pages read (reel_sources, which saves them), the names it gives are in those pages, the museums
+the picture step searches have pictures of them, and it isn't a story already made or planned.
 
     python -m ytc.reel_backlog refill [--count N] [--dry]
 """
@@ -9,6 +9,7 @@ story already made or planned.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import logging
 import re
@@ -21,6 +22,9 @@ log = logging.getLogger(__name__)
 MAX_PAGES = 8
 # A proposed story is a repeat when this share of its title's words are in one title already made or planned.
 SAME_TITLE = 0.6
+# Pictures the picture step could use whose titles name one of a proposal's figures: every line of a Reel shows one,
+# and a story whose figures no museum painted (Dhruva, set aside on 17 Oct) fails the picture step three times.
+ART_MIN = 3
 SCHEMA = {
     "type": "object",
     "properties": {"stories": {"type": "array", "items": {"type": "object", "properties": {
@@ -50,6 +54,9 @@ Propose {count} new stories, mixing the three texts. Each must:
   Reels about well-known figures draw a hundred times the plays of the rest;
 - end on an uplifting or meaningful note: nothing political, nothing comparing castes or communities, and no story
   whose point is violence or death;
+- be one that old Indian paintings show: every line of the Reel shows a Pahari or Rajasthani painting from a
+  museum's open collection, so choose figures and episodes painters showed often; a story whose figures nobody
+  painted can't be made (Dhruva's penance was set aside for that);
 - not be one of the stories below, already made or planned, nor another telling of one.
 
 For each give: story, a short English title; hook, the opening line in natural spoken Hindi (Devanagari, at most 14
@@ -122,7 +129,29 @@ def check(row: dict, stories: list[dict]) -> str | None:
     found = [n for n in names if n[:5] in pages]
     if len(names) < 2 or len(found) < len(names):
         return f"names not in those chapters: {sorted(set(names) - set(found))}"
+    if (named := pictured(row["names"])) < ART_MIN and museums_answer():
+        return f"{named} usable pictures name {', '.join(row['names'])}; at least {ART_MIN} are needed"
     return None
+
+
+def pictured(names: list[str]) -> int:
+    """How many of the pictures the picture step's searches for `names` find, and could use, name one of them in
+    their titles."""
+    from . import reel_pictures
+
+    folded = [n[:5] for n in map(_fold, names) if len(n) >= 3]
+    seen: dict[str, str] = {}
+    for name in names:
+        for hit in reel_pictures._search(name):
+            seen.setdefault(hit["ref"], _fold(hit.get("title") or ""))
+    return sum(any(n in title for n in folded) for title in seen.values())
+
+
+@functools.cache
+def museums_answer() -> bool:
+    """Whether the picture step's searches work now: Krishna is painted more than anyone, so finding no picture of
+    him means the museums didn't answer, not that nobody painted a story."""
+    return pictured(["Krishna"]) > 0
 
 
 def _cell(text: str) -> str:
