@@ -31,7 +31,8 @@ from . import reels
 
 log = logging.getLogger(__name__)
 
-ON = True
+# Off for good: on 17 Oct, after ak001 went out again, the owner asked that every Reel posted be new and unique.
+ON = False
 MIN_PER_DAY = 3
 WITHIN = timedelta(hours=4)
 REST = timedelta(days=14)
@@ -254,7 +255,7 @@ def _stock(store, folder: Path, video: Path) -> bool:
 def keep(store, folder: Path) -> None:
     """Before reel_host.prune drops a Reel's "media" release, stock its render if the Reel may go out again one day,
     so the cloud's own Reels are stocked without the Mac. `folder` is in the run's clone."""
-    if why_not(folder, SOMEDAY, []) or f"{folder.name}.mp4" in store.assets(STOCK):
+    if not ON or why_not(folder, SOMEDAY, []) or f"{folder.name}.mp4" in store.assets(STOCK):
         return
     with tempfile.TemporaryDirectory() as tmp:
         video = Path(tmp) / f"{folder.name}.mp4"
