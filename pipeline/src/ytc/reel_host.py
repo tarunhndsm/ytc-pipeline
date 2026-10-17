@@ -21,16 +21,17 @@ cycle, with the desk's state kept between runs as a tar in the NEWS_RELEASE draf
 It also runs Days of Odd's watchdog (monitor/monitor.py on the clone): `watchdog`, every 3 hours, pushes the studio's
 new alerts and a morning summary to the owner's phone, with only the keys of the "days-of-odd" context (WATCH_KEYS).
 
-`growth`, every 6 hours, is the brand's growth desk (ytc.growth): it reads every post's numbers on Instagram, Facebook
-and YouTube, and once a day decides what to make next (the writer's notes, the backlog's order, new stories). It
-shares the factory's serial group, so the two never edit the backlog at once.
+`growth` is the brand's growth desk (ytc.growth): it reads every post's numbers on Instagram, Facebook and YouTube,
+and once a day decides what to make next (the writer's notes, the backlog's order, new stories). It edits the backlog
+the factory reads, so it runs as the factory job's last step (--due: every GROWTH_EVERY, when the job has the time);
+a schedule of its own in the factory's serial group made CircleCI drop the factory run queued in the same minute.
 
     python -m ytc.reel_host reels [--dry]
     python -m ytc.reel_host factory [--force] [--until ISO]
     python -m ytc.reel_host selftest                          # the keys, the clone, the releases and ffmpeg
     python -m ytc.reel_host news [--dry] [--test]             # a news desk cycle; --test renders a kept Short
     python -m ytc.reel_host watchdog                          # Days of Odd's monitor, alerting the owner's phone
-    python -m ytc.reel_host growth [--dry]                    # the growth desk: read the numbers, steer what's made
+    python -m ytc.reel_host growth [--dry] [--due --until ISO]  # the growth desk: read the numbers, steer what's made
     python -m ytc.reel_host upload content/instagram/ak011    # from the Mac: a render (or its youtube/ cut)
     python -m ytc.reel_host publish                           # from the Mac: the public copy, now
     python -m ytc.reel_host news-seed                         # from the Mac: keep the Mac's news desk state
@@ -51,7 +52,7 @@ import sys
 import tarfile
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -93,6 +94,9 @@ WATCH_MINUTES = 15
 GROWTH = "content/instagram/automation/growth"
 GROWTH_RELEASE = "growth logs"
 GROWTH_MINUTES = 40
+GROWTH_EVERY = timedelta(hours=5, minutes=30)
+# Before the factory job's --until; the job itself stops 10 minutes after it.
+GROWTH_NEEDS = timedelta(minutes=12)
 
 
 def _read(path: Path) -> dict:
@@ -602,15 +606,28 @@ def watchdog() -> dict:
     return done
 
 
-def growth(dry: bool = False) -> dict:
-    """The growth desk on the clone, its log in the GROWTH_RELEASE draft release; the public log gets its counts."""
+def growth(dry: bool = False, due: bool = False, until: datetime | None = None) -> dict:
+    """The growth desk on the clone, its log in the GROWTH_RELEASE draft release; the public log gets its counts.
+    With `due`, only when its last run is GROWTH_EVERY old and `until` leaves it GROWTH_NEEDS."""
+    if due and until and until - datetime.now(timezone.utc) < GROWTH_NEEDS:
+        return {"skipped": "too little of the job left"}
     try:
         _started(prepare)
     except Exception as err:
         reel_cloud._alert(f"The growth desk on CircleCI couldn't clone the repo: {err}"[:900])
         raise
+    if due:
+        try:
+            last = datetime.fromisoformat(_read(cloud.CHECKOUT / GROWTH / "state.json").get("ran", ""))
+        except ValueError:
+            last = None
+        if last and datetime.now(timezone.utc) - last < GROWTH_EVERY:
+            return {"skipped": f"last run {last.isoformat()}"}
+    limit = GROWTH_MINUTES * 60
+    if until:
+        limit = min(limit, int((until - datetime.now(timezone.utc)).total_seconds()) + 480)
     command = [sys.executable, "-m", "ytc.growth", "run", *(["--dry"] if dry else [])]
-    code, done = _step(command, _env(), LOGS / "growth.log", GROWTH_MINUTES * 60)
+    code, done = _step(command, _env(), LOGS / "growth.log", limit)
     _keep_log(reel_media.Store(), GROWTH_RELEASE, LOGS / "growth.log")
     done["exit"] = code
     if dry or code:
@@ -640,8 +657,10 @@ def main() -> None:
     desk.add_argument("--dry", action="store_true", help="post nothing and keep no state")
     desk.add_argument("--test", action="store_true", help="render the kept test Short instead, with no Gemini call")
     commands.add_parser("watchdog", help="Days of Odd's monitor, alerting the owner's phone")
-    commands.add_parser("growth", help="the growth desk: read every post's numbers and steer what's made").add_argument(
-        "--dry", action="store_true", help="decide but change nothing")
+    growing = commands.add_parser("growth", help="the growth desk: read every post's numbers and steer what's made")
+    growing.add_argument("--dry", action="store_true", help="decide but change nothing")
+    growing.add_argument("--due", action="store_true", help="only when its last run is GROWTH_EVERY old")
+    growing.add_argument("--until", type=datetime.fromisoformat, help="the job's last moment to start a step")
     commands.add_parser("upload", help="from the Mac: put rendered Reels' media in the releases").add_argument(
         "folders", type=Path, nargs="+")
     commands.add_parser("publish", help="from the Mac: bring the public copy up to this checkout's last commit")
@@ -680,7 +699,7 @@ def main() -> None:
     elif args.command == "watchdog":
         result = watchdog()
     elif args.command == "growth":
-        result = growth(args.dry)
+        result = growth(args.dry, args.due, args.until)
     else:
         result = selftest()
     print(json.dumps(result, indent=1, ensure_ascii=False))

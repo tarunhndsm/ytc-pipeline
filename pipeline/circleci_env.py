@@ -2,7 +2,6 @@
 
     python3 pipeline/circleci_env.py      # needs a CircleCI personal API token on a CIRCLECI_TOKEN line in pipeline/.env
     python3 pipeline/circleci_env.py watchdog     # only the third
-    python3 pipeline/circleci_env.py growth       # only the growth desk's schedule
 
 1. A deploy key that can push to this repo and nothing else (secrets/circleci_deploy_key, git-ignored), apart from the
    studio's Modal key, so CircleCI's access can be revoked alone.
@@ -30,7 +29,6 @@ WANTED = (*BRAND_ENV, "AK_MEDIA_TOKEN", "IG_YOUTUBE_TOKEN", "YTC_DEPLOY_KEY")
 WATCH_CONTEXT = "days-of-odd"
 WATCH_KEYS = ("BUFFER_API_KEY", "BUFFER_YOUTUBE_CHANNEL_ID", "CLOUDINARY_URL", "YTC_NTFY_TOPIC")  # reel_host.WATCH_KEYS
 WATCH_SCHEDULE = "days of odd watchdog"
-GROWTH_SCHEDULE = "ankahi growth desk"
 
 
 def deploy_key() -> None:
@@ -93,23 +91,7 @@ def watchdog() -> None:
     print(f"CircleCI context {WATCH_CONTEXT}: {', '.join(WATCH_KEYS)}; schedule \"{WATCH_SCHEDULE}\", every 3 hours")
 
 
-def growth() -> None:
-    """The growth desk's schedule (reel_host's `growth`): 02, 08, 14 and 20 UTC, so the strategist's daily run, which
-    waits for the morning in India, lands at 07:30 IST."""
-    token = env_values()["CIRCLECI_TOKEN"]
-    if not any(s["name"] == GROWTH_SCHEDULE for s in _call("GET", f"project/{PROJECT}/schedule", token)["items"]):
-        _call("POST", f"project/{PROJECT}/schedule", token, {
-            "name": GROWTH_SCHEDULE, "description": "The Reels' growth desk every 6 hours (ytc.reel_host growth)",
-            "attribution-actor": "system", "parameters": {"branch": "main", "run": "growth"},
-            "timetable": {"per-hour": 1, "hours-of-day": [2, 8, 14, 20],
-                          "days-of-week": ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]}})
-    print(f"CircleCI schedule \"{GROWTH_SCHEDULE}\": 02, 08, 14 and 20 UTC")
-
-
 if __name__ == "__main__":
-    if sys.argv[1:] == ["growth"]:
-        growth()
-        raise SystemExit
     if sys.argv[1:] != ["watchdog"]:
         deploy_key()
         variables()

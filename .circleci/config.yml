@@ -3,8 +3,8 @@ version: 2.1
 # @ankahi.kathayein's Reels (pipeline/src/ytc/reel_host.py). The project's two schedules set `run`: "reels" at 15
 # past every hour, "factory" at 40 past. A third, "news", runs a cycle of the owner's news desk every quarter of an
 # hour, with the keys of the "news-desk" context. A fourth, "watchdog", checks Days of Odd's studio every 3 hours,
-# with the keys of the "days-of-odd" context. A fifth, "growth", runs the Reels' growth desk every 6 hours, in the
-# factory's serial group because both edit the backlog. A push (the copy from the private repo) runs nothing.
+# with the keys of the "days-of-odd" context. The Reels' growth desk runs at the end of the factory job every 6 hours;
+# `run: growth` starts it by hand. A push (the copy from the private repo) runs nothing.
 
 parameters:
   run:
@@ -100,6 +100,14 @@ jobs:
                 working_directory: pipeline
                 no_output_timeout: 55m
                 command: .venv/bin/python -m ytc.reel_host factory --until "$AK_UNTIL"
+      # The growth desk edits the backlog this job reads, so it runs here, not in a job of its own: CircleCI drops
+      # one of two jobs queued together in a serial group, and a schedule of its own lost the factory a run.
+      - run:
+          name: The growth desk, when its last run is six hours old and the job has the time
+          working_directory: pipeline
+          no_output_timeout: 30m
+          when: always
+          command: .venv/bin/python -m ytc.reel_host growth --due --until "$AK_UNTIL"
   selftest:
     executor: python
     resource_class: medium

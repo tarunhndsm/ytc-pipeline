@@ -294,6 +294,7 @@ def run(brand: Brand, dry: bool = False, think: bool | None = None, scout_now: b
             if state.get("digest") != str(today) and notify(brand, _digest(brand, analysis, thought)):
                 state["digest"] = str(today)
                 pushed.append("digest")
+        state["ran"] = now.isoformat(timespec="minutes")
         _write(out / "state.json", state)
     applied = (thought or {}).get("applied") or {}
     return {
