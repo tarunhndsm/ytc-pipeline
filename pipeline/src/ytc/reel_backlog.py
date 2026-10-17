@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import unicodedata
+from datetime import date
 
 from . import llm, reel_sources, reel_writer
 
@@ -64,9 +65,14 @@ words) that would stop a devotee scrolling; source, as above; picture, the kind 
 show it, or ""; care, what to leave out or tell gently, or ""; and names, two or three names of people or beings in
 the story as they would be spelled in the English translation of those chapters (for example "Ambarisha",
 "Durvasa").
-
+{guidance}
 Already made or planned:
 {known}
+"""
+GUIDANCE = """
+What our numbers say viewers want now (the growth desk, ytc.growth): favour stories that fit these, where they meet
+every rule above:
+{themes}
 """
 
 
@@ -169,12 +175,13 @@ def append(rows: list[dict]) -> None:
     reel_writer.BACKLOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def refill(count: int = 10, dry: bool = False) -> dict:
-    """Ask for `count` stories and add the ones that check out; what was added and what was turned down."""
+def refill(count: int = 10, dry: bool = False, guidance: str = "") -> dict:
+    """Ask for `count` stories, aimed at `guidance` when given, and add the ones that check out; what was added and
+    what was turned down."""
     stories = known()
     listing = "\n".join(f"- {s['story']} ({s['source']})" for s in stories)
-    answer = llm.generate(PROMPT.format(count=count, known=listing), schema=SCHEMA, models=reel_writer.SCRIPT_MODELS,
-                          purpose="backlog refill")
+    prompt = PROMPT.format(count=count, known=listing, guidance=GUIDANCE.format(themes=guidance) if guidance else "")
+    answer = llm.generate(prompt, schema=SCHEMA, models=reel_writer.SCRIPT_MODELS, purpose="backlog refill")
     added, turned_down = [], {}
     for row in answer.get("stories", []):
         row = {k: str(row.get(k, "")).strip() for k in ("story", "hook", "source", "picture", "care")} | \
@@ -186,7 +193,64 @@ def refill(count: int = 10, dry: bool = False) -> dict:
             added.append(row)
     if added and not dry:
         append(added)
-    return {"added": [f"{r['story']} ({r['source']})" for r in added], "turned_down": turned_down}
+    return {"added": [f"{r['story']} ({r['source']})" for r in added], "stories": [r["story"] for r in added],
+            "turned_down": turned_down}
+
+
+def _is_row(line: str) -> bool:
+    """Whether a line is a story row of the Next table, as reel_writer.backlog reads them."""
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    return line.startswith("|") and len(cells) >= len(reel_writer.COLUMNS) and cells[0] != "Story" \
+        and bool(set(cells[0]) - set("-: "))
+
+
+def hold(story: str, until: date) -> bool:
+    """Hold a Next row, named by story, until a day (its From column); whether the row was there."""
+    lines = reel_writer.BACKLOG.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    for i in range(lines.index("## Next") + 1, len(lines)):
+        cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+        if _is_row(lines[i]) and cells[0].casefold() == story.strip().casefold():
+            cells += [""] * (len(reel_writer.COLUMNS) + 2 - len(cells))
+            cells[len(reel_writer.COLUMNS) + 1] = until.isoformat()
+            lines[i] = "| " + " | ".join(cells) + " |"
+            reel_writer.BACKLOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return True
+    return False
+
+
+def reorder(stories: list[str]) -> list[str]:
+    """Move these Next rows, named by story, to the top in this order; the stories moved. A series already under way
+    stays first, a first part brings its other parts along in order, and a later part never jumps its earlier ones."""
+    lines = reel_writer.BACKLOG.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    start = lines.index("## Next")
+    slots = [i for i in range(start + 1, len(lines)) if _is_row(lines[i])]
+    rows = reel_writer.backlog()
+    if len(rows) != len(slots):
+        raise RuntimeError("the backlog's Next table didn't read the same way twice")
+    keep = 0
+    if rows and (part := reel_writer.part_of(rows[0])) and part["number"] > 1:
+        while keep < len(rows) and (p := reel_writer.part_of(rows[keep])) and p["series"] == part["series"]:
+            keep += 1
+    order, moved = list(range(keep)), []
+    for story in stories:
+        j = next((k for k in range(keep, len(rows)) if k not in order
+                  and rows[k]["story"].strip().casefold() == story.strip().casefold()), None)
+        if j is None:
+            continue
+        part = reel_writer.part_of(rows[j])
+        if part and part["number"] > 1:
+            continue
+        order += [j] if not part else [k for k in range(keep, len(rows)) if k not in order
+                                       and (p := reel_writer.part_of(rows[k])) and p["series"] == part["series"]]
+        moved.append(rows[j]["story"])
+    if not moved:
+        return []
+    order += [k for k in range(len(rows)) if k not in order]
+    texts = [lines[i] for i in slots]
+    for slot, k in zip(slots, order):
+        lines[slot] = texts[k]
+    reel_writer.BACKLOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return moved
 
 
 def main() -> None:

@@ -401,6 +401,26 @@ def _name_words(text: str) -> set[str]:
     return {w.lower() for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]{2,}", text)} - {"the", "and", "for"}
 
 
+def _winners(count: int = 5) -> str:
+    """The channel's Shorts at least two days old that drew the most and the fewest views, from the latest analytics,
+    so new topics aim at subjects with the winners' pull (the growth desk's lever on Days of Odd)."""
+    files = sorted(ANALYTICS.glob("*.json"))
+    now = _now()
+    videos = sorted((v for v in (_json(files[-1], {}) if files else {}).get("videos", [])
+                     if now - datetime.fromisoformat(v["published"].replace("Z", "+00:00")) >= timedelta(hours=48)),
+                    key=lambda v: -v["views"])
+    if len(videos) < count + 3:
+        return ""
+
+    def line(v: dict) -> str:
+        watched = (v.get("analytics") or {}).get("averageViewPercentage")
+        return f"- {v['title']}: {v['views']:,} views" + (f", watched {watched:.0f}% through" if watched else "")
+
+    return ("Our Shorts viewers watched most; favour subjects with the same pull:\n"
+            + "\n".join(line(v) for v in videos[:count])
+            + "\nAnd least; avoid subjects like these:\n" + "\n".join(line(v) for v in videos[-3:]) + "\n\n")
+
+
 def add_topics(run: Run, backlog_count: int = 4) -> list[str]:
     """Fresh, well-documented topics for the backlog, plus an anniversary 3 to 8 weeks out."""
     from .research import _existing
@@ -425,7 +445,8 @@ def add_topics(run: Run, backlog_count: int = 4) -> list[str]:
         "topics already listed below or close variants. Favor series with few open topics. Write each topic as a "
         "short line naming the story, the year, and the twist, like: \"The Great Molasses Flood (1919)\". Dates "
         "look like \"Oct 7\".\n\n"
-        f"Open topics per series: {json.dumps(series_counts)}\n\nAlready listed or made:\n" + "\n".join(f"- {k}" for k in known)
+        + _winners()
+        + f"Open topics per series: {json.dumps(series_counts)}\n\nAlready listed or made:\n" + "\n".join(f"- {k}" for k in known)
     )
     # Without new topics the calendar runs dry in weeks, so this falls back to the light models' separate quota.
     answer = llm.generate(prompt, schema=TOPICS_SCHEMA, models=llm.BROAD, purpose="new topics")

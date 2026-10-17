@@ -21,11 +21,16 @@ cycle, with the desk's state kept between runs as a tar in the NEWS_RELEASE draf
 It also runs Days of Odd's watchdog (monitor/monitor.py on the clone): `watchdog`, every 3 hours, pushes the studio's
 new alerts and a morning summary to the owner's phone, with only the keys of the "days-of-odd" context (WATCH_KEYS).
 
+`growth`, every 6 hours, is the brand's growth desk (ytc.growth): it reads every post's numbers on Instagram, Facebook
+and YouTube, and once a day decides what to make next (the writer's notes, the backlog's order, new stories). It
+shares the factory's serial group, so the two never edit the backlog at once.
+
     python -m ytc.reel_host reels [--dry]
     python -m ytc.reel_host factory [--force] [--until ISO]
     python -m ytc.reel_host selftest                          # the keys, the clone, the releases and ffmpeg
     python -m ytc.reel_host news [--dry] [--test]             # a news desk cycle; --test renders a kept Short
     python -m ytc.reel_host watchdog                          # Days of Odd's monitor, alerting the owner's phone
+    python -m ytc.reel_host growth [--dry]                    # the growth desk: read the numbers, steer what's made
     python -m ytc.reel_host upload content/instagram/ak011    # from the Mac: a render (or its youtube/ cut)
     python -m ytc.reel_host publish                           # from the Mac: the public copy, now
     python -m ytc.reel_host news-seed                         # from the Mac: keep the Mac's news desk state
@@ -85,6 +90,9 @@ WATCH_OUT = Path.home() / "watchdog"
 # The monitor's report names the owner's accounts, so it goes here instead of CircleCI's public log.
 WATCH_RELEASE = "watchdog logs"
 WATCH_MINUTES = 15
+GROWTH = "content/instagram/automation/growth"
+GROWTH_RELEASE = "growth logs"
+GROWTH_MINUTES = 40
 
 
 def _read(path: Path) -> dict:
@@ -594,6 +602,30 @@ def watchdog() -> dict:
     return done
 
 
+def growth(dry: bool = False) -> dict:
+    """The growth desk on the clone, its log in the GROWTH_RELEASE draft release; the public log gets its counts."""
+    try:
+        _started(prepare)
+    except Exception as err:
+        reel_cloud._alert(f"The growth desk on CircleCI couldn't clone the repo: {err}"[:900])
+        raise
+    command = [sys.executable, "-m", "ytc.growth", "run", *(["--dry"] if dry else [])]
+    code, done = _step(command, _env(), LOGS / "growth.log", GROWTH_MINUTES * 60)
+    _keep_log(reel_media.Store(), GROWTH_RELEASE, LOGS / "growth.log")
+    done["exit"] = code
+    if dry or code:
+        return done
+    changed = [f"{done[k]} {label}" for k, label in (("moved_up", "stories moved up"), ("new_stories", "stories added"),
+                                                      ("writer_notes", "writer notes")) if done.get(k)]
+    message = f"Growth desk on CircleCI: {done.get('posts', 0)} posts read" + (f"; {', '.join(changed)}" if changed else "")
+    try:
+        done["saved"] = reel_cloud._push([GROWTH, BACKLOG, SOURCES], message)
+    except Exception as err:
+        reel_cloud._alert(f"The growth desk on CircleCI couldn't save what it did: {err}"[:900])
+        raise
+    return done
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m ytc.reel_host", description="@ankahi.kathayein's Reels on CircleCI")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -607,6 +639,8 @@ def main() -> None:
     desk.add_argument("--dry", action="store_true", help="post nothing and keep no state")
     desk.add_argument("--test", action="store_true", help="render the kept test Short instead, with no Gemini call")
     commands.add_parser("watchdog", help="Days of Odd's monitor, alerting the owner's phone")
+    commands.add_parser("growth", help="the growth desk: read every post's numbers and steer what's made").add_argument(
+        "--dry", action="store_true", help="decide but change nothing")
     commands.add_parser("upload", help="from the Mac: put rendered Reels' media in the releases").add_argument(
         "folders", type=Path, nargs="+")
     commands.add_parser("publish", help="from the Mac: bring the public copy up to this checkout's last commit")
@@ -644,6 +678,8 @@ def main() -> None:
         result = news_test() if args.test else news(args.dry)
     elif args.command == "watchdog":
         result = watchdog()
+    elif args.command == "growth":
+        result = growth(args.dry)
     else:
         result = selftest()
     print(json.dumps(result, indent=1, ensure_ascii=False))

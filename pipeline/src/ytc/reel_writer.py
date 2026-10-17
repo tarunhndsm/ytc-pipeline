@@ -24,6 +24,7 @@ from .spec import ShortSpec
 log = logging.getLogger(__name__)
 
 BACKLOG = reels.REELS / "backlog.md"
+GROWTH_PLAYBOOK = reels.REELS / "automation" / "growth" / "playbook.json"
 COLUMNS = ("story", "hook", "source", "picture", "care")
 # An optional sixth column puts a row in a story told over several Reels: "<the series' Hindi name> | k/n".
 SERIES = "series"
@@ -199,6 +200,10 @@ For the post:
 What the reviewer asked of the last Reels, for next time. Effects, captions and editing are done later, not by
 you: follow what is about the story, the words and what the pictures show.
 {lessons}
+
+What our viewers respond to, from the numbers of every Reel on Instagram, Facebook and YouTube (the growth desk's
+notes; the rules above come first, and every fact still comes from the source text):
+{audience}
 
 The narration of the best-reviewed Reel so far, for the voice and the pace (not its story):
 {example}
@@ -392,6 +397,15 @@ def lessons(count: int = 4) -> str:
     return "\n".join(f"- {note}" for note in notes) or "- nothing yet"
 
 
+def audience() -> str:
+    """The growth desk's notes (ytc.growth) on what our viewers respond to, from every post's numbers."""
+    try:
+        notes = json.loads(GROWTH_PLAYBOOK.read_text(encoding="utf-8")).get("writer_notes") or []
+    except (OSError, ValueError, AttributeError):
+        notes = []
+    return "\n".join(f"- {note}" for note in notes[:6]) or "- nothing yet"
+
+
 def example() -> str:
     """The narration of the Reel with the best review so far, less a last line that trails off ("…"), which no
     ending may copy."""
@@ -567,7 +581,7 @@ def _prompt(row: dict, pages: list[dict], before: tuple[Path, dict] | None = Non
                          question_min=QUESTION_WORDS[0], question_max=QUESTION_WORDS[1],
                          answer_min=ANSWER_WORDS[0], answer_max=ANSWER_WORDS[1], series=_series(part, reel_id),
                          hashtags=" and ".join(HASHTAGS),
-                         lessons=lessons(), example=example(), sources=sources)
+                         lessons=lessons(), audience=audience(), example=example(), sources=sources)
 
 
 @contextlib.contextmanager

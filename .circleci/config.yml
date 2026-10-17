@@ -3,12 +3,13 @@ version: 2.1
 # @ankahi.kathayein's Reels (pipeline/src/ytc/reel_host.py). The project's two schedules set `run`: "reels" at 15
 # past every hour, "factory" at 40 past. A third, "news", runs a cycle of the owner's news desk every quarter of an
 # hour, with the keys of the "news-desk" context. A fourth, "watchdog", checks Days of Odd's studio every 3 hours,
-# with the keys of the "days-of-odd" context. A push (the copy from the private repo) runs nothing.
+# with the keys of the "days-of-odd" context. A fifth, "growth", runs the Reels' growth desk every 6 hours, in the
+# factory's serial group because both edit the backlog. A push (the copy from the private repo) runs nothing.
 
 parameters:
   run:
     type: enum
-    enum: [none, reels, factory, selftest, news, newstest, watchdog]
+    enum: [none, reels, factory, selftest, news, newstest, watchdog, growth]
     default: none
   dry:
     type: boolean
@@ -158,6 +159,27 @@ jobs:
           paths:
             - ~/watchdog
           when: always
+  growth:
+    executor: python
+    resource_class: small
+    steps:
+      - install
+      - when:
+          condition: << pipeline.parameters.dry >>
+          steps:
+            - run:
+                name: Read the numbers and decide, changing nothing
+                working_directory: pipeline
+                no_output_timeout: 45m
+                command: .venv/bin/python -m ytc.reel_host growth --dry
+      - unless:
+          condition: << pipeline.parameters.dry >>
+          steps:
+            - run:
+                name: Read every post's numbers and steer what gets made
+                working_directory: pipeline
+                no_output_timeout: 45m
+                command: .venv/bin/python -m ytc.reel_host growth
 
 workflows:
   reels:
@@ -197,3 +219,9 @@ workflows:
       - watchdog:
           context: days-of-odd
           serial-group: ytc-pipeline/watchdog
+  growth:
+    when:
+      equal: [growth, << pipeline.parameters.run >>]
+    jobs:
+      - growth:
+          serial-group: ytc-pipeline/factory
