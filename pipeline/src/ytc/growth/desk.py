@@ -90,7 +90,7 @@ def _num(value) -> str:
 
 
 def render(brand: Brand, analysis: dict, trends: dict, comments: list[dict], thought: dict | None, errors: list[str],
-           state: dict, now: datetime) -> str:
+           state: dict, now: datetime, covered: dict | None = None) -> str:
     """The desk's report, rewritten every run."""
     lines = [f"# Growth desk: {brand.name}", "",
              f"Updated {_ist(now)}. {analysis['posts']} posts tracked across {', '.join(brand.channels)}. "
@@ -152,6 +152,15 @@ def render(brand: Brand, analysis: dict, trends: dict, comments: list[dict], tho
             lines.append(f"- Critic: {item}")
         for item in thought.get("dropped") or []:
             lines.append(f"- Dropped by the rules: {item}")
+    if covered:
+        lines += ["", "## Festivals close by", ""]
+        lines += [f"- First in line: {item}" for item in covered.get("held", [])]
+        if covered.get("new_stories"):
+            lines.append("- New stories added for them: " + "; ".join(covered["new_stories"]))
+        lines += [f"- Nothing for {name} yet: no recent Reel or backlog story is about it, and refill found none today"
+                  for name in covered.get("uncovered", [])]
+        if covered.get("refill_error"):
+            lines.append(f"- Adding a story failed: {covered['refill_error']}")
     if trends.get("festivals"):
         lines += ["", "## Festivals ahead", ""] + [f"- {f['date']} {f['festival']} ({f['days_left']} days): {f['stories']}"
                                                    for f in trends["festivals"][:8]]
@@ -253,7 +262,15 @@ def run(brand: Brand, dry: bool = False, think: bool | None = None, scout_now: b
             log.exception("the strategist failed")
             errors.append(f"strategist: {err}"[:300])
 
-    report = render(brand, analysis, trends, comments, thought, errors, state, now)
+    covered: dict = {}
+    if cover := getattr(levers, "cover_festivals", None):
+        try:
+            covered = cover(now, dry, state)
+        except Exception as err:
+            log.exception("covering the festivals close by failed")
+            errors.append(f"festivals: {err}"[:300])
+
+    report = render(brand, analysis, trends, comments, thought, errors, state, now, covered)
     pushed = []
     if dry:
         target = Path(tempfile.gettempdir()) / f"growth-{brand.key}"
@@ -284,5 +301,5 @@ def run(brand: Brand, dry: bool = False, think: bool | None = None, scout_now: b
         "comments": len(comments), "niche": len(trends.get("niche", [])), "thought": bool(thought),
         "moved_up": len(applied.get("moved_up") or []), "new_stories": len(applied.get("new_stories") or []),
         "writer_notes": applied.get("writer_notes", 0), "dropped": len((thought or {}).get("dropped") or []),
-        "pushed": pushed, "errors": len(errors),
+        "festival_stories": len(covered.get("held") or []), "pushed": pushed, "errors": len(errors),
     }

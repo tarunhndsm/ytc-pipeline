@@ -30,6 +30,9 @@ OFF_LIMITS = re.compile(
     r"|clickbait|exaggerat|invent|fake|mislead|guarantee|shock(ing)? truth|you won.t believe", re.I)
 # Writer notes about when posts go out: the writer can't act on them.
 POSTING = re.compile(r"\b\d{1,2}:\d{2}\b|\bslots?\b|post(ing)? (at|time)|schedul", re.I)
+# Writer notes against the quiz ending, which is the owner's format.
+AGAINST_QUIZ = re.compile(r"quiz\w*\W+(?:\w+\W+){0,6}?(?:cut|drop|remov|skip|without|fewer|stop|avoid|lower|weak)"
+                          r"|(?:cut|drop|remov|skip|without|fewer|stop|avoid)\w*\W+(?:\w+\W+){0,6}?quiz", re.I)
 _STRING_LIST = {"type": "array", "items": {"type": "string"}}
 SCHEMA = {
     "type": "object",
@@ -231,6 +234,9 @@ def guard(decisions: dict, titles: list[str], today: date) -> tuple[dict, list[s
                 continue
             if field == "writer_notes" and POSTING.search(text):
                 dropped.append(f"{field}: {text[:120]} (posting times aren't the writer's)")
+                continue
+            if field == "writer_notes" and AGAINST_QUIZ.search(text):
+                dropped.append(f"{field}: {text[:120]} (the quiz ending is the owner's format)")
                 continue
             if field == "writer_notes" and len(text) > NOTE_CHARS:
                 text = text[:NOTE_CHARS].rsplit(" ", 1)[0] + "…"

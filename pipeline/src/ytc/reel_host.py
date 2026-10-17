@@ -616,7 +616,8 @@ def growth(dry: bool = False) -> dict:
     if dry or code:
         return done
     changed = [f"{done[k]} {label}" for k, label in (("moved_up", "stories moved up"), ("new_stories", "stories added"),
-                                                      ("writer_notes", "writer notes")) if done.get(k)]
+                                                      ("writer_notes", "writer notes"),
+                                                      ("festival_stories", "festival stories first")) if done.get(k)]
     message = f"Growth desk on CircleCI: {done.get('posts', 0)} posts read" + (f"; {', '.join(changed)}" if changed else "")
     try:
         done["saved"] = reel_cloud._push([GROWTH, BACKLOG, SOURCES], message)

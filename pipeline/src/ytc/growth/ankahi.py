@@ -5,6 +5,7 @@ It may change three things, all upstream of the judge, who still fails a weak Re
 - the order of the backlog's Next table (reel_backlog.reorder; a series already under way stays first);
 - new backlog stories aimed at what is working or a festival ahead (reel_backlog.refill with guidance; each still
   has to pass refill's checks: a source that parses, names in its pages, museum paintings of its figures).
+A festival a few days off that nothing is planned for gets a story on every run, strategist or not (cover_festivals).
 """
 
 from __future__ import annotations
@@ -40,9 +41,14 @@ REFILL_COUNT = 8
 MAX_PRIORITIES = 6
 # A festival's story waits in the backlog until this many days before it, then goes out first.
 HOLD_DAYS = 3
-# Names in too many stories to tie one to a festival theme.
+# A festival this close with nothing planned for it gets a story now, made the day before it.
+NEAR_DAYS = 4
+# The newest Reels made, which may already be a close festival's story.
+RECENT_MADE = 6
+# Names and words in too many stories to tie one to a festival theme.
 COMMON = {"krishna", "rama", "shiva", "vishnu", "hanuman", "arjuna", "lord", "with", "from", "into", "their", "when",
-          "what", "story", "stories", "devotion", "divine", "gods", "secret"}
+          "what", "story", "stories", "devotion", "divine", "gods", "secret", "kanda", "parva", "purana", "valmiki",
+          "ramayana", "mahabharata", "bhagavata", "forms", "takes", "great"}
 
 
 def made_posts() -> dict[str, str]:
@@ -127,7 +133,9 @@ def _soon(theme: dict, today: date, days: int = 21) -> bool:
 
 
 def _words(text: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z]+", text.lower()) if len(w) > 3 and w not in COMMON}
+    """Words of five letters or more, cut to five so "returns" meets "return"; sources in brackets left out."""
+    return {w[:5] for w in re.findall(r"[a-z]+", re.sub(r"\([^)]*\)", " ", text.lower()))
+            if len(w) > 4 and w not in COMMON}
 
 
 def _festival_of(story: str, themes: list[dict]) -> dict | None:
@@ -178,6 +186,10 @@ def apply(decisions: dict, now: datetime, dry: bool, state: dict) -> dict:
         group = [r for r in rows if (p := reel_writer.part_of(r)) and p["series"] == part["series"]] if part else [row]
         if part and min(reel_writer.part_of(r)["number"] for r in group) > 1:
             continue
+        if any(r.get(reel_writer.FROM) for r in group):
+            # A From date already set was planned with the series' length and the factory's pace in mind.
+            first.append(group[0]["story"])
+            continue
         until = date.fromisoformat(item["date"]) - timedelta(days=HOLD_DAYS + (len(group) - 1) // 2)
         if until > today and not dry:
             for r in group:
@@ -189,4 +201,45 @@ def apply(decisions: dict, now: datetime, dry: bool, state: dict) -> dict:
     wanted = list(dict.fromkeys(first + (decisions.get("priorities") or [])))[:MAX_PRIORITIES]
     if wanted:
         done["moved_up"] = wanted if dry else reel_backlog.reorder(wanted)
+    return done
+
+
+def cover_festivals(now: datetime, dry: bool, state: dict) -> dict:
+    """Each festival in the next NEAR_DAYS days that no recent Reel is about gets a story: the backlog's own if one
+    fits (a story told in one Reel), else a new one through refill's checks, tried once a day. It goes first, held
+    until the day before the festival unless its row already has a date. What was done."""
+    from . import scout
+
+    today = now.astimezone(reels.IST).date()
+    done: dict = {}
+    recent = [story for _, (story, _) in sorted(_made().items(), key=lambda item: int(item[0][2:]))[-RECENT_MADE:]]
+    tried = state.setdefault("festival_refills", {})
+    for festival in scout.festivals(today, NEAR_DAYS):
+        day, name = date.fromisoformat(festival["date"]), festival["festival"]
+        theme = {"theme": festival["stories"], "festival": name, "date": festival["date"],
+                 "why": f"{name} is in {(day - today).days} days and nothing is planned for it"}
+        if day <= today or any(_festival_of(story, [theme]) for story in recent):
+            continue
+        story = next((r["story"] for r in reel_writer.backlog()
+                      if not reel_writer.part_of(r) and _festival_of(r["story"], [theme])), None)
+        if not story and tried.get(name) != str(today):
+            try:
+                result = reel_backlog.refill(2, dry=dry, guidance=_guidance([theme], today))
+                story = next((s for s in result.get("stories", []) if _festival_of(s, [theme])), None)
+                done["new_stories"] = done.get("new_stories", []) + result["added"]
+            except Exception as err:
+                log.exception("a story for %s failed", name)
+                done["refill_error"] = str(err)[:200]
+            if not dry:
+                tried[name] = str(today)
+        if not story:
+            done.setdefault("uncovered", []).append(name)
+            continue
+        until = max(today, day - timedelta(days=1))
+        row = next((r for r in reel_writer.backlog() if r["story"] == story), {})
+        if not dry and row:
+            if not row.get(reel_writer.FROM):
+                reel_backlog.hold(story, until)
+            reel_backlog.reorder([story])
+        done.setdefault("held", []).append(f"{story} until {row.get(reel_writer.FROM) or until} ({name})")
     return done
