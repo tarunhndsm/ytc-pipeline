@@ -39,16 +39,17 @@ WRITERS = tuple(m for m in llm.FLASH if m not in (reels.JUDGE, "gemini-flash-lat
 # costs one of the day's few good voice takes and Gemma got a script's facts wrong where Flash Lite didn't.
 SCRIPT_MODELS = (*WRITERS, *llm.FLASH_LITE)
 PICTURE_MODELS = (*SCRIPT_MODELS, *llm.GEMMA)
-# The narrator speaks 2.4 to 2.9 words a second: the writer's lines run about fifty seconds, and with the answer
-# and the question the page adds around them (ANSWER, ASK, INVITE) the Reel runs 65 to 80 seconds, under
-# reels.LONGEST, with room for the story to finish.
+# The narrator speaks 2.4 to 2.9 words a second: the writer's lines run about fifty seconds, under reels.LONGEST,
+# with room for the story to finish.
 BEATS = (10, 13)
 WORDS = (115, 140)
 LINE_WORDS = (4, 16)
-# Each Reel asks its viewers a question about its story once the story has ended, and the next Reel answers it
-# right after its hook, thanking those who got it right (reel_cloud books every Reel after the one it answers).
-# Comments and follows decide how far Instagram carries a Reel, and a question with its answer promised in the next
-# Reel brings viewers back for it. The question is a fact from the story's own source that the narration leaves out.
+# The quiz from Reel to Reel: a Reel asks its viewers a question once its story has ended (a fact from its source
+# that the narration leaves out), and the next Reel answers it right after its hook, thanking those who got it right
+# (reel_cloud books every Reel after the one it answers). Off since 18 Oct (owner): quiz Reels reached under half as
+# many people as the Reels of the same days, and Meta demotes posts that ask for comments. Off, a Reel ends on its
+# story, and the first one after the last question answers it once, after its story, as that Reel promised.
+QUIZ = False
 QUESTION_WORDS = (5, 12)
 ANSWER_WORDS = (1, 4)
 ASK = "आज का सवाल… {question}"
@@ -116,6 +117,14 @@ SCHEMA = {
                  "quiz"],
 }
 
+
+def _schema() -> dict:
+    """The script's schema: SCHEMA, without the question for the viewers while the quiz is off."""
+    if QUIZ:
+        return SCHEMA
+    return SCHEMA | {"properties": {k: v for k, v in SCHEMA["properties"].items() if k != "quiz"},
+                     "required": [k for k in SCHEMA["required"] if k != "quiz"]}
+
 PROMPT = """You write Reels for अनकही कथाएँ (@ankahi.kathayein), an Instagram page of lesser-known, sourced stories
 from the Ramayana, the Mahabharata and the Puranas, told in Hindi to Indian families. A demanding editor scores every
 Reel from 1 to 10 on its hook, retention, shareability, payoff, ending, narration, visuals and accuracy, and it is
@@ -132,7 +141,8 @@ The narration, as beats (one line of narration each):
   from this story, not a greeting or a summary. At most {hook_words} words, naming the story's best-known figure:
   "रावण का असली नाम… रावण नहीं था।" drew 65,000 plays, while openings of 11 to 15 words lost most viewers.
 - Every line makes the viewer want the next: no background they don't need, no repetition, no sermon.
-- The last few lines pay off the hook with a real revelation from the source.
+- The last few lines pay off the hook with a real revelation from the source, the kind of fact viewers send to
+  their family.
 - The last line ends the story: a complete sentence that settles the hook, so the Reel feels finished to someone
   who watches it once. Never end on an unfinished thought, a trailing "…" or a question. A Reel whose line 1 was
   "सूर्य देव के सारथी के पैर ही नहीं हैं… एक माँ की जल्दबाज़ी की वजह से।" ended with "अगली बार वो लाली देखो, तो
@@ -153,22 +163,9 @@ The narration, as beats (one line of narration each):
 
 How the Reel runs around your lines (the page adds the lines in quotes, in the same voice):
 {around}
-
-The question for the viewers (quiz). After your last line the Reel says "{ask}" and invites them to write the
-answer in the comments; the next Reel gives the answer and thanks those who got it right. Comments decide how far
-Instagram carries a Reel, so make it one people want to answer:
-- question: in Hindi, {question_min} to {question_max} words, ending with "?": a fact from this story's source text
-  that your narration doesn't give, so viewers who know the story can answer and the rest want to know. A name, a
-  number, a place or an object, answered in a word or two, like "राजा अश्वपति ने संतान के लिए कितने साल तप किया
-  था?" Not a trick, not about death, violence or caste, and not about this Reel's own revelation. Ask only what the
-  evidence says, as it says it: the same person or people doing it, and the same way (given "in his mind", say so).
-- answer: the answer in Hindi, {answer_min} to {answer_max} words, numbers as words, like "अठारह साल".
-- accepted: the ways a right answer may be written in the comments, in Devanagari and in Latin letters, with
-  common spellings and digits, like ["अठारह", "18", "atharah", "eighteen"].
-- evidence: one sentence of the source text below that gives the answer, copied exactly.
-
+{quiz}
 The pictures (they are chosen later from what you write):
-- Every line gets a picture of its own, the last one too; the question after it shows line 1's picture again.
+- Every line gets a picture of its own, the last one too{reused}.
 - picture: in English, exactly what the line's picture should show: the person, being, place or object the line
   names, at that moment of the story (a child, if the line is about his childhood). The pictures come from museum
   collections of Indian paintings and sculpture (the Cleveland Museum of Art, the Met, LACMA, the Freer, the
@@ -210,6 +207,22 @@ The narration of the best-reviewed Reel so far, for the voice and the pace (not 
 
 The source text:
 {sources}
+"""
+
+# PROMPT's {quiz} while the quiz is on.
+QUIZ_PROMPT = """
+The question for the viewers (quiz). After your last line the Reel says "{ask}" and invites them to write the
+answer in the comments; the next Reel gives the answer and thanks those who got it right. Comments decide how far
+Instagram carries a Reel, so make it one people want to answer:
+- question: in Hindi, {question_min} to {question_max} words, ending with "?": a fact from this story's source text
+  that your narration doesn't give, so viewers who know the story can answer and the rest want to know. A name, a
+  number, a place or an object, answered in a word or two, like "राजा अश्वपति ने संतान के लिए कितने साल तप किया
+  था?" Not a trick, not about death, violence or caste, and not about this Reel's own revelation. Ask only what the
+  evidence says, as it says it: the same person or people doing it, and the same way (given "in his mind", say so).
+- answer: the answer in Hindi, {answer_min} to {answer_max} words, numbers as words, like "अठारह साल".
+- accepted: the ways a right answer may be written in the comments, in Devanagari and in Latin letters, with
+  common spellings and digits, like ["अठारह", "18", "atharah", "eighteen"].
+- evidence: one sentence of the source text below that gives the answer, copied exactly.
 """
 
 FIX = """That script breaks these rules:
@@ -326,19 +339,26 @@ def _made_before(reel_id: str):
             yield folder, yaml.safe_load((folder / "short.yaml").read_text(encoding="utf-8"))
 
 
+def _can_go_out(folder: Path) -> bool:
+    """Booked on Instagram and not taken back, or made and passed by the judge or not judged yet."""
+    if record := reels._read(folder / "instagram.json"):
+        return not record.get("withdrawn")
+    return not turned_down(folder)
+
+
 def asked_before(reel_id: str) -> tuple[Path, dict] | None:
-    """The newest Reel before `reel_id` that asked its viewers a question and can still go out (booked on Instagram,
-    or made and passed by the judge or not judged yet): the Reel whose question `reel_id` answers. The factory
-    writes no new story while that Reel waits for the judge."""
+    """The newest Reel before `reel_id` that asked its viewers a question and can still go out, unless a Reel after
+    it that can still go out answers it already (with the quiz off, only the first Reel after the last question
+    answers it): the Reel whose question `reel_id` answers. The factory writes no new story while that Reel waits
+    for the judge."""
+    answered = set()
     for folder, spec in _made_before(reel_id):
-        if not spec.get("quiz"):
+        if not _can_go_out(folder):
             continue
-        if record := reels._read(folder / "instagram.json"):
-            if record.get("withdrawn"):
-                continue
-            return folder, spec
-        if not turned_down(folder):
-            return folder, spec
+        if spec.get("quiz"):
+            return None if folder.name in answered else (folder, spec)
+        if before := (spec.get("answers") or {}).get("reel"):
+            answered.add(before)
     return None
 
 
@@ -505,7 +525,7 @@ def problems(script: dict, pages: list[dict] | None = None) -> list[str]:
     tags = [t.lower() for t in script["hashtags"]]
     if len(tags) != 5 or not all(t.startswith("#") for t in tags) or not all(t in tags for t in HASHTAGS):
         found.append(f"hashtags must be 5, each starting with #, including {' and '.join(HASHTAGS)}.")
-    return found + quiz_problems(script.get("quiz") or {}, beats, pages)
+    return found + (quiz_problems(script.get("quiz") or {}, beats, pages) if QUIZ else [])
 
 
 def _hashtags(tags: list[str]) -> list[str]:
@@ -536,13 +556,16 @@ def _invite(part: dict | None) -> str:
 
 def _around(before: tuple[Path, dict] | None, part: dict | None) -> str:
     lines = ["- Your line 1, the hook."]
-    if before:
-        quiz = before[1]["quiz"]
-        lines.append(f"- \"{ANSWER.format(answer=quiz['answer'])}\": the answer to the question the Reel before this "
-                     f"one asked its viewers (\"{quiz['question']}\"), over that Reel's picture. Your line 2 comes "
-                     "straight after it, so it pulls the viewer back into your hook.")
-    lines += ["- Your lines 2 to the last: the story, which your last line ends.",
-              f"- \"{ASK.format(question='<your quiz question>')} {_invite(part)}\", over line 1's picture."]
+    answer = (f"- \"{ANSWER.format(answer=before[1]['quiz']['answer'])}\": the answer to the question the Reel before "
+              f"this one asked its viewers (\"{before[1]['quiz']['question']}\"), over that Reel's picture.") \
+        if before else ""
+    if answer and QUIZ:
+        lines.append(f"{answer} Your line 2 comes straight after it, so it pulls the viewer back into your hook.")
+    lines.append("- Your lines 2 to the last: the story, which your last line ends.")
+    if answer and not QUIZ:
+        lines.append(answer)
+    if QUIZ:
+        lines.append(f"- \"{ASK.format(question='<your quiz question>')} {_invite(part)}\", over line 1's picture.")
     return "\n".join(lines)
 
 
@@ -561,8 +584,8 @@ def _series(part: dict | None, reel_id: str) -> str:
                     "left off, in a few words.")
     if number < of:
         text.append(f"End at a turning point: the last line is a complete sentence that settles this part's hook and "
-                    f"says what is still to come, like \"पर असली परीक्षा… अभी बाकी थी।\" The Reel then tells "
-                    f"viewers part {number + 1} comes next.")
+                    f"says what is still to come, like \"पर असली परीक्षा… अभी बाकी थी।\""
+                    + (f" The Reel then tells viewers part {number + 1} comes next." if QUIZ else ""))
     else:
         text.append("This is the last part: the whole story ends here.")
     return "\n".join(text) + "\n"
@@ -574,13 +597,15 @@ def _prompt(row: dict, pages: list[dict], before: tuple[Path, dict] | None = Non
     picture = (f"\n- The backlog suggests this picture; use it for the line it fits: {row['picture']}"
                if row["picture"] else "")
     sources = "\n\n".join(f"[{page['url']}]\n{page['text']}" for page in pages)
+    quiz = QUIZ_PROMPT.format(ask=ASK.format(question="<your quiz question>"), question_min=QUESTION_WORDS[0],
+                              question_max=QUESTION_WORDS[1], answer_min=ANSWER_WORDS[0],
+                              answer_max=ANSWER_WORDS[1]) if QUIZ else ""
     return PROMPT.format(story=row["story"], hook=row["hook"], source=row["source"], care=care, picture=picture,
                          beats_min=BEATS[0], beats_max=BEATS[1], words_min=WORDS[0], words_max=WORDS[1],
                          line_min=LINE_WORDS[0], line_max=LINE_WORDS[1], hook_words=HOOK_WORDS,
-                         around=_around(before, part), ask=ASK.format(question="<your quiz question>"),
-                         question_min=QUESTION_WORDS[0], question_max=QUESTION_WORDS[1],
-                         answer_min=ANSWER_WORDS[0], answer_max=ANSWER_WORDS[1], series=_series(part, reel_id),
-                         hashtags=" and ".join(HASHTAGS),
+                         around=_around(before, part), quiz=quiz,
+                         reused="; the question after it shows line 1's picture again" if QUIZ else "",
+                         series=_series(part, reel_id), hashtags=" and ".join(HASHTAGS),
                          lessons=lessons(), audience=audience(), example=example(), sources=sources)
 
 
@@ -600,7 +625,7 @@ def write(row: dict, pages: list[dict], reel_id: str, before: tuple[Path, dict] 
     Flash and Flash Lite are both spent."""
     prompt = _prompt(row, pages, before, part, reel_id)
     with gemini_only():
-        script = _tidy(llm.generate(prompt, schema=SCHEMA, models=SCRIPT_MODELS, thinking="high",
+        script = _tidy(llm.generate(prompt, schema=_schema(), models=SCRIPT_MODELS, thinking="high",
                                     purpose=f"{reel_id} script"))
         for _ in range(FIX_ROUNDS):
             if not (found := problems(script, pages)):
@@ -608,7 +633,7 @@ def write(row: dict, pages: list[dict], reel_id: str, before: tuple[Path, dict] 
             log.info("%s script breaks %d rules: %s", reel_id, len(found), " ".join(found))
             script = _tidy(llm.generate([prompt, "\nYour script:\n" + json.dumps(script, ensure_ascii=False),
                                          FIX.format(problems="\n".join(f"- {p}" for p in found))],
-                                        schema=SCHEMA, models=SCRIPT_MODELS, thinking="high",
+                                        schema=_schema(), models=SCRIPT_MODELS, thinking="high",
                                         purpose=f"{reel_id} script fix"))
     if found := problems(script, pages):
         raise ValueError(f"{reel_id} script still breaks rules after {FIX_ROUNDS} rewrites: {' '.join(found)}")
@@ -616,20 +641,38 @@ def write(row: dict, pages: list[dict], reel_id: str, before: tuple[Path, dict] 
 
 
 def chained(script: dict, before: tuple[Path, dict] | None, part: dict | None) -> dict:
-    """The writer's lines with the page's own around them: after the hook, the answer to the question the Reel
-    `before` asked; after the story, this Reel's question and the invitation to answer it in the comments, with the
-    question on screen until the end."""
+    """The writer's lines with the page's own around them: after the hook (after the story while the quiz is off),
+    the answer to the question the Reel `before` asked; after the story, this Reel's question and the invitation to
+    answer it in the comments, with the question on screen until the end."""
     beats = [beat | {"role": "story"} for beat in script["beats"]]
     if before:
         quiz = before[1]["quiz"]
-        beats.insert(1, {"text": ANSWER.format(answer=quiz["answer"]), "emphasis": _words(quiz["answer"])[0],
-                         "sfx": "pop", "role": "answer", "label": ANSWER_LABEL.format(answer=quiz["answer"]),
-                         "from": before[0].name, "picture": "", "search": []})
+        beats.insert(1 if QUIZ else len(beats), {
+            "text": ANSWER.format(answer=quiz["answer"]), "emphasis": _words(quiz["answer"])[0], "sfx": "pop",
+            "role": "answer", "label": ANSWER_LABEL.format(answer=quiz["answer"]), "from": before[0].name,
+            "picture": "", "search": []})
+    if not QUIZ:
+        return script | {"beats": beats}
     question = script["quiz"]["question"].strip()
     # One line: a picture shown again always starts from line 1's framing, so two would jump at the cut.
     beats.append({"text": f"{ASK.format(question=question)} {_invite(part)}", "emphasis": "सवाल फ़ॉलो", "sfx": "pop",
                   "role": "quiz", "label": ASK_LABEL.format(question=question), "picture": "", "search": []})
     return script | {"beats": beats}
+
+
+def end_on_story(folder: Path) -> bool:
+    """With the quiz off, make a script written while it was on end on its story, as chained() now would: its
+    question for the viewers goes, and its answer to the Reel before moves after the story. True if it changed."""
+    path = folder / SCRIPT
+    if QUIZ or not (draft := reels._read(path)) or not (script := draft.get("script")):
+        return False
+    beats = [beat for beat in script["beats"] if beat.get("role", "story") == "story"]
+    beats += [beat for beat in script["beats"] if beat.get("role") == "answer"]
+    if beats == script["beats"] and "quiz" not in script:
+        return False
+    draft["script"] = {k: v for k, v in script.items() if k != "quiz"} | {"beats": beats}
+    path.write_text(json.dumps(draft, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return True
 
 
 def house_style() -> dict:
@@ -667,7 +710,7 @@ def spec_fields(draft: dict) -> dict:
               "hook_text": hook_text, "sources": draft["sources"],
               "hashtags": [t.lower() for t in script["hashtags"]], "tags": script["tags"], **style,
               "beats": [_spec_beat(b) for b in script["beats"]]}
-    if quiz := script.get("quiz"):
+    if QUIZ and (quiz := script.get("quiz")):
         fields["quiz"] = {k: quiz[k] for k in ("question", "answer", "accepted", "evidence")}
     return fields | {k: draft[k] for k in ("answers", "part") if draft.get(k)}
 

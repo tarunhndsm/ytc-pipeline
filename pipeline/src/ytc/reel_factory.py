@@ -332,6 +332,8 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
     mine = state["reels"].setdefault(reel, {"started": datetime.now(IST).isoformat(timespec="seconds"), "fails": {}})
     if (script := _read(folder / reel_writer.SCRIPT)) and script.get("row"):
         move_row(reel, script["row"])  # a resumed Reel's row, moved on a clone that was never pushed
+        if not (folder / "short.yaml").exists() and reel_writer.end_on_story(folder):
+            print(f"{reel}: its script, written while the quiz was on, now ends on its story", flush=True)
     for step, finished, command, timeout in _steps(reel, bool(mine.get("rescue"))):
         if finished():
             continue

@@ -3,10 +3,11 @@
 Every hour `reel_run` takes a fresh clone of the repo, reviews each Reel the Mac rendered that is still missing
 judgments (reels.review, on the brand's own Gemini project), schedules the ones that pass through Buffer
 (instagram.schedule) so that every day has a Reel before any day has two and the queue stays full (free_slots,
-fill_queue), gives each Reel Instagram has to the brand's YouTube channel as a Short at YouTube's own evening times
-(instagram.mirror, lineup, spread), as the Reel's shorter YouTube cut once one is rendered (cuts), and mirrors each
-new Reel to the brand's Facebook Page (facebook_mirror). Each run also checks Buffer's channels and sends a failed
-post again once (buffer_health), and takes the videos of Reels all three channels had off Cloudinary (unhost_sent).
+fill_queue), gives the brand's YouTube channel one Short a day at most, the Reel that did best on Instagram after its
+first day (pick_short, instagram.mirror, lineup, spread), as the Reel's shorter YouTube cut once one is rendered
+(cuts), and mirrors each new Reel to the brand's Facebook Page (facebook_mirror). Each run also checks Buffer's
+channels and sends a failed post again once (buffer_health), and takes the videos of Reels all three channels had, or
+that YouTube passed over, off Cloudinary (unhost_sent).
 It pushes review.json, instagram.json, youtube.json, facebook.json and the Facebook mirror's start time. Once a day it
 saves the YouTube channel's numbers and keeps its playlists (channel_upkeep). The work runs from the clone's code, so
 a pushed fix reaches the next run without a deploy.
@@ -31,6 +32,7 @@ import json
 import logging
 import os
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -75,6 +77,13 @@ YOUTUBE_SLOTS = ((18, 30), (20, 0), (21, 30))
 # A day's first Reel goes out in the evening, then at noon, then in the morning; a day's first Short at 20:00.
 EVENING_FIRST = sorted(SLOTS, reverse=True)
 YOUTUBE_FIRST = ((20, 0), (18, 30), (21, 30))
+# One Short a day at most (owner, 18 Oct), at DAILY_SHORT: of the Reels out on Instagram between PICK_AFTER and
+# PICK_DAYS ago, the one with the highest index there (growth.analyze: its reach over what a post of its age gets),
+# if it is in the better half of them. With every Reel a Short, up to three a day, the channel's fifteen newest drew
+# a median of about a dozen views, and YouTube shows less of a channel whose Shorts its viewers skip. The day's Short
+# is picked from PICK_AHEAD before its slot, from the growth desk's freshest numbers (it reads them every 6 hours).
+DAILY_SHORT = (20, 0)
+PICK_AFTER, PICK_DAYS, PICK_AHEAD = timedelta(hours=24), timedelta(days=7), timedelta(hours=12)
 # Every day up to COVER_DAYS ahead (today is the first) gets a post before any day gets a second, and only days up
 # to FULL_DAYS ahead get a second or third: a day with nothing costs a channel more than a day with one fewer, and
 # posts spread ahead keep the days covered while the studio stalls. Up to 3 + 3 + 2 + 2 Reels wait, QUEUE of them.
@@ -250,40 +259,36 @@ def _ahead(now: datetime, days: int) -> list[date]:
     return [first + timedelta(days=n) for n in range(days)]
 
 
-def youtube_slot(due: datetime, now: datetime, planned: list[datetime], after: datetime | None = None) -> datetime:
-    """A free YouTube slot for a Reel due on Instagram at `due`: on that day while one is still LEAD away, else on the
-    soonest day after. A Reel already out on Instagram catches up on the day up to COVER_DAYS ahead with the fewest
-    Shorts, the soonest of those. A Reel that answers another's question takes the first open slot after `after`,
-    that one's Short."""
-    taken = {_minute(when) for when in _dues(youtube=True) + planned}
-    if after is not None:
-        first = max(due, now + LEAD, after).astimezone(IST).date()
-        for day in (first + timedelta(days=n) for n in range(14)):
-            for hour, mins in YOUTUBE_SLOTS:
-                slot = datetime(day.year, day.month, day.day, hour, mins, tzinfo=IST)
-                if slot > after and slot > now + LEAD and slot not in taken:
-                    return slot
-        raise RuntimeError(f"YouTube has no free slot in the two weeks from {first:%d %b}")
-    if due > now + LEAD:
-        first = due.astimezone(IST).date()
-        days = [first + timedelta(days=n) for n in range(14)]
-    else:
-        per_day = Counter(when.date() for when in taken)
-        soon = _ahead(now, COVER_DAYS)
-        days = sorted(soon, key=lambda d: per_day[d]) + [soon[-1] + timedelta(days=n) for n in range(1, 14)]
-    for day in days:
-        if slot := _open(day, YOUTUBE_FIRST, taken, now):
-            return slot
-    raise RuntimeError(f"YouTube has no free slot in the two weeks from {days[0]:%d %b}")
+def pick_short(now: datetime) -> tuple[Path | None, str]:
+    """The Reel the day's Short is (DAILY_SHORT), with its index on Instagram; or None, with why not."""
+    from . import reels
+    from .growth import analyze, brands
+
+    path = brands.ANKAHI.out / "posts.json"
+    store = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    index = {row["reel"]: row["index"] for row in analyze.score(store.get("posts", {}), now)
+             if row["platform"] == "instagram" and row.get("reel") and not row.get("repost") and "index" in row}
+    recent = {folder: index[folder.name] for folder in reels.REELS.glob("ak*")
+              if folder.name in index and (due := _due(folder)) and now - PICK_DAYS <= due <= now - PICK_AFTER}
+    if not recent:
+        return None, "no Reel out on Instagram for one to seven days has its numbers yet"
+    middle = statistics.median(recent.values())
+    best = max((folder for folder in recent if _wants_short(folder)), key=recent.get, default=None)
+    if best is None:
+        return None, "every Reel out on Instagram for one to seven days has its Short"
+    if recent[best] < middle:
+        return None, (f"the best Reel without a Short, {best.name} (index {recent[best]}), is under the median of the "
+                      f"week's Reels ({middle:.2f})")
+    return best, f"index {recent[best]} on Instagram (the week's median is {middle:.2f})"
 
 
 def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
-    """Schedule each Reel Instagram has on the brand's YouTube channel too; the slots it took."""
+    """Schedule the brand's YouTube Shorts: each Reel pinned to a slot (PINS), and one a day at most, the one
+    pick_short finds; the slots it took."""
     from . import instagram, publish, reels
 
     planned: list[datetime] = []
-    waiting = [(due, folder) for folder in reels.REELS.iterdir()
-               if folder.is_dir() and _wants_short(folder) and (due := _due(folder))]
+    waiting = [folder for folder in reels.REELS.iterdir() if folder.is_dir() and _wants_short(folder) and _due(folder)]
     if not waiting:
         return planned
     try:
@@ -292,44 +297,54 @@ def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
         done["errors"].append(f"couldn't read Buffer's YouTube posts, so none were made: {err}"[:300])
         return planned
     pins = _pins(now)
-    # Pinned Shorts first, since the queue frees one place per Short sent; then the Reels still to go out on
-    # Instagram, so each keeps its slot; the ones already out catch up after.
-    waiting.sort(key=lambda item: (item[1].name not in pins, item[0] <= now + LEAD, item[0]))
-    mirrored: dict[str, datetime] = {}
-    for due, folder in waiting:
-        reel = folder.name
+    booking: list[tuple[Path, datetime, str]] = []
+    for folder in sorted(waiting):
         withdrawn = (folder / instagram.YOUTUBE_RECORD).exists()
         # Buffer keeps a withdrawn Short's post as sent: only its cut's post is that Reel's Short now.
-        if (post := buffered.get(reel)) and (not withdrawn or instagram.HOSTED_REEL.search(post["media_url"]).group(2)):
+        if (post := buffered.get(folder.name)) and \
+                (not withdrawn or instagram.HOSTED_REEL.search(post["media_url"]).group(2)):
             if not dry:
                 instagram.adopt(folder, post, youtube=True)
-            done["mirrored"][reel] = f"{_ist(post['dueAt'])} (already in Buffer)"
-            continue
+            done["mirrored"][folder.name] = f"{_ist(post['dueAt'])} (already in Buffer)"
+        elif folder.name in pins:
+            booking.append((folder, pins[folder.name], "where it is pinned"))
+    today = now.astimezone(IST).date()
+    slot = datetime(today.year, today.month, today.day, *DAILY_SHORT, tzinfo=IST)
+    days = {_minute(when).date() for when in _dues(youtube=True)} | {when.date() for _, when, _ in booking}
+    if now + LEAD < slot <= now + PICK_AHEAD and today not in days:
+        picked, why = pick_short(now)
+        if picked is None:
+            done["held"]["YouTube"] = f"no Short today: {why}"
+        else:
+            booking.append((picked, slot, why))
+    for folder, slot, why in booking:
+        reel = folder.name
         if len({d for d in _dues(youtube=True) if d > now} | set(planned)) >= QUEUE:
             done["held"][f"{reel} (YouTube)"] = "waiting for room in the YouTube queue"
             continue
-        after, why = _youtube_after(folder, mirrored)
-        if why:
-            done["held"][f"{reel} (YouTube)"] = why
+        after, waits = _youtube_after(folder, {})
+        if waits or (after and after >= slot):
+            done["held"][f"{reel} (YouTube)"] = waits or \
+                f"the Short whose question it answers goes out later, {_ist(after.isoformat())}"
             continue
-        taken = {_minute(when) for when in _dues(youtube=True) + planned}
-        slot = pins[reel] if reel in pins and pins[reel] not in taken and not after else \
-            youtube_slot(due, now, planned, after)
+        if _minute(slot) in {_minute(when) for when in _dues(youtube=True) + planned}:
+            done["held"][f"{reel} (YouTube)"] = f"{slot:%a %d %b %H:%M} IST has a Short already"
+            continue
         planned.append(slot)
-        mirrored[reel] = slot
         if dry:
-            done["mirrored"][reel] = f"would go out on YouTube {slot.astimezone(IST):%a %d %b %H:%M} IST"
+            done["mirrored"][reel] = f"would go out on YouTube {slot.astimezone(IST):%a %d %b %H:%M} IST, {why}"
             continue
         try:
             instagram.mirror(folder / "short.yaml", slot)
-            done["mirrored"][reel] = f"{slot.astimezone(IST):%a %d %b %H:%M} IST"
+            done["mirrored"][reel] = f"{slot.astimezone(IST):%a %d %b %H:%M} IST, {why}"
         except publish.BufferBusy as err:
+            planned.remove(slot)
             done["held"][f"{reel} (YouTube)"] = f"Buffer is busy ({err})"
             return planned
         except Exception as err:
+            planned.remove(slot)
             log.exception("mirroring %s to YouTube failed", reel)
             done["errors"].append(f"mirroring {reel} to YouTube failed: {err}"[:300])
-            mirrored.pop(reel, None)
     return planned
 
 
@@ -664,18 +679,14 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
                                           " to keep the queue full")
 
 
-def idle_days(now: datetime, planned: list[datetime], youtube_planned: list[datetime],
-              reposts: bool = False) -> list[str]:
-    """The next two days (from today while it still has a slot), on each channel, when nothing is due there. With
-    `reposts` (reel_repost.ready), Instagram's days are covered: an older Reel goes out again a few hours ahead."""
-    idle = []
-    channels = [("YouTube", _dues(youtube=True) + youtube_planned)]
-    if not reposts:
-        channels.insert(0, ("Instagram", _dues() + planned))
-    for name, dues in channels:
-        days = {_minute(when).date() for when in dues}
-        idle += [f"nothing on {name} {day:%a %d %b}" for day in _ahead(now, 2) if day not in days]
-    return idle
+def idle_days(now: datetime, planned: list[datetime], reposts: bool = False) -> list[str]:
+    """The next two days (from today while it still has a slot) when nothing is due on Instagram; none with `reposts`
+    (reel_repost.ready), since an older Reel then goes out again a few hours ahead. YouTube has a Short only on the
+    days a Reel did well enough (pick_short), so its days don't count."""
+    if reposts:
+        return []
+    days = {_minute(when).date() for when in _dues() + planned}
+    return [f"nothing on Instagram {day:%a %d %b}" for day in _ahead(now, 2) if day not in days]
 
 
 def channel_upkeep(now: datetime, done: dict) -> None:
@@ -804,13 +815,16 @@ def buffer_health(now: datetime, done: dict, dry: bool = False) -> None:
 
 
 def unhost_sent(now: datetime, done: dict, dry: bool = False) -> None:
-    """Take a Reel's videos off Cloudinary once Instagram, Facebook and YouTube all had their posts KEEP ago: Buffer
-    fetches a video only at its slot, and the free plan counts what stays hosted against the same 25 credits a month
-    as what Buffer downloads. A Reel short of one of the three keeps its videos."""
+    """Take a Reel's videos off Cloudinary once Instagram, Facebook and YouTube all had their posts KEEP ago, YouTube
+    counting as done once Instagram had the Reel PICK_DAYS ago without its being picked for a Short: Buffer fetches a
+    video only at its slot, and the free plan counts what stays hosted against the same 25 credits a month as what
+    Buffer downloads. A Reel short of one of them keeps its videos."""
     from . import facebook, instagram, publish, reels
 
     for folder in sorted(path.parent for path in reels.REELS.glob(f"ak*/{instagram.RECORD}")):
         paths = [folder / name for name in (instagram.RECORD, facebook.RECORD, instagram.YOUTUBE_RECORD)]
+        if not paths[2].exists() and (due := _due(folder)) and due < now - PICK_DAYS:
+            paths.pop()
         if not all(path.exists() for path in paths):
             continue
         records = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
@@ -1000,7 +1014,7 @@ def work(dry: bool = False) -> dict:
         log.exception("checking the older Reels that can go out again failed")
         done["reposts_ready"] = False
         done["errors"].append(f"checking the older Reels that can go out again failed: {err}"[:300])
-    done["idle"] = idle_days(now, planned, youtube_planned, done["reposts_ready"])
+    done["idle"] = idle_days(now, planned, done["reposts_ready"])
     upcoming = sorted({d for d in _dues() if d > now} | set(planned))
     done["queue"] = len(upcoming)
     done["last_due"] = f"{upcoming[-1].astimezone(IST):%a %d %b %H:%M} IST" if upcoming else ""

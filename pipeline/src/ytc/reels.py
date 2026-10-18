@@ -78,13 +78,7 @@ as a demanding editor who knows what Instagram rewards: watch time and replays, 
 Below are the script with each line's timing, one frame from the middle of each shot (what viewers see, captions
 included; a long line can cut to a close-up, so it has two), the automatic checks, and the audio of the Reel.
 
-The page runs a quiz from Reel to Reel, which its viewers expect, since comments carry a Reel on Instagram: a line
-marked "quiz answer" gives the answer to the question the previous Reel asked, over that Reel's first picture, and
-the line marked "quiz question" asks this Reel's question for the comments over line 1's picture, promising the
-answer and a shout-out in the next Reel. Both pictures are there on purpose: the answer's belongs to the previous
-Reel's story, so don't mark it down as off-topic or shown again, in visuals or in frames. Judge those lines on being
-short, clear and inviting (under retention and accuracy); judge payoff and ending on the story's last line, the one
-before the question. A title with "भाग" is one
+{quiz} A title with "भाग" is one
 part of a series: it must still feel whole, ending on a turn that makes viewers want the next part.
 
 Score each 1 to 10 (10 exceptional, 8 strong, 7 publishable, 6 or lower must be fixed), with a one-line note:
@@ -118,6 +112,20 @@ Also:
 
 {previous}
 """
+
+# REVIEW_PROMPT's {quiz}: the page's own lines around a Reel's story, as reel_writer.QUIZ has them.
+QUIZ_BRIEF = """The page runs a quiz from Reel to Reel, which its viewers expect, since comments carry a Reel on Instagram: a line
+marked "quiz answer" gives the answer to the question the previous Reel asked, over that Reel's first picture, and
+the line marked "quiz question" asks this Reel's question for the comments over line 1's picture, promising the
+answer and a shout-out in the next Reel. Both pictures are there on purpose: the answer's belongs to the previous
+Reel's story, so don't mark it down as off-topic or shown again, in visuals or in frames. Judge those lines on being
+short, clear and inviting (under retention and accuracy); judge payoff and ending on the story's last line, the one
+before the question."""
+NO_QUIZ_BRIEF = """A Reel ends on its story: the page no longer asks its viewers a question. A line marked "quiz
+answer", after the story, gives the answer to the question an earlier Reel asked, over that Reel's first picture:
+the picture is there on purpose, so don't mark it down as off-topic or shown again, in visuals or in frames. Judge
+that line on being short and clear (under accuracy); judge payoff and ending on the story's last line, the one
+before it."""
 
 
 def _read(path: Path):
@@ -278,8 +286,10 @@ def _review_parts(spec: ShortSpec, video: Path, result: dict, lean: bool = False
     """The judge's prompt: the brief, the script line by line with its frames, the checks and the audio. Lean, it
     leaves out the caption and the previous Reel, which the judge can do without."""
     manifest = _read(video.parent / "work" / "manifest.json")
+    from . import reel_writer
+
     previous = "The previous Reel is left out of this review." if lean else _previous_note(spec.id)
-    parts: list = [REVIEW_PROMPT.format(previous=previous)]
+    parts: list = [REVIEW_PROMPT.format(previous=previous, quiz=QUIZ_BRIEF if reel_writer.QUIZ else NO_QUIZ_BRIEF)]
     caption = "" if lean else f"\nCaption: {spec.description}"
     parts.append(f"\nTitle: {spec.title}{caption}\nSources: {', '.join(spec.sources)}")
     if spec.hook_text:

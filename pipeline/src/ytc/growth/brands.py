@@ -49,9 +49,9 @@ ANKAHI = Brand(
         "An Instagram, Facebook and YouTube page of lesser-known, sourced stories from the Ramayana, the Mahabharata "
         "and the Bhagavata Purana, told in Hindi in one-minute Reels over old Pahari and Rajasthani paintings, for "
         "Indian families. A pipeline writes, voices, pictures, judges and books three or four new Reels a day from a "
-        "backlog of stories; each Reel may end on a quiz question the next Reel answers. Instagram is the main "
-        "platform (most views come from non-followers through the Reels feed); YouTube Shorts and Facebook get the "
-        "same Reels."
+        "backlog of stories; each Reel ends on its story's payoff. Instagram is the main platform (most views come "
+        "from non-followers through the Reels feed); Facebook gets the same Reels, and YouTube one Short a day at "
+        "most, the Reel that did best on Instagram."
     ),
     buffer_key="IG_BUFFER_API_KEY",
     channels={"instagram": "IG_BUFFER_CHANNEL_ID", "facebook": "IG_BUFFER_FACEBOOK_CHANNEL_ID",
@@ -69,8 +69,8 @@ ANKAHI = Brand(
         "Only stories the three texts tell, from the translations the pipeline reads; never invent or exaggerate.",
         "Nothing political, nothing comparing castes or communities, nothing about another faith, no story whose "
         "point is violence or death.",
-        "No engagement bait: never ask viewers to like, share, follow or tag to get something; a quiz question the "
-        "next Reel answers is fine.",
+        "No engagement bait: never ask viewers to comment, like, share, follow or tag to get something, and no "
+        "questions for the comments.",
         "No clickbait a Reel doesn't pay off: the title and hook promise only what the story delivers.",
         "Old Indian paintings only (public domain or open licence), no modern pictures, nudity or figures of "
         "another faith; synthetic media is disclosed.",

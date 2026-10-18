@@ -30,9 +30,10 @@ OFF_LIMITS = re.compile(
     r"|clickbait|exaggerat|invent|fake|mislead|guarantee|shock(ing)? truth|you won.t believe", re.I)
 # Writer notes about when posts go out: the writer can't act on them.
 POSTING = re.compile(r"\b\d{1,2}:\d{2}\b|\bslots?\b|post(ing)? (at|time)|schedul", re.I)
-# Writer notes against the quiz ending, which is the owner's format.
-AGAINST_QUIZ = re.compile(r"quiz\w*\W+(?:\w+\W+){0,6}?(?:cut|drop|remov|skip|without|fewer|stop|avoid|lower|weak)"
-                          r"|(?:cut|drop|remov|skip|without|fewer|stop|avoid)\w*\W+(?:\w+\W+){0,6}?quiz", re.I)
+# Writer notes about a question for the viewers or asking for comments: the owner stopped the quiz on 18 Oct, and a
+# Reel ends on its story.
+QUIZ_NOTE = re.compile(r"quiz|question (?:for|to) (?:the )?viewers|ask (?:the )?viewers|in the comments"
+                       r"|comment (?:the|your|below)", re.I)
 _STRING_LIST = {"type": "array", "items": {"type": "string"}}
 SCHEMA = {
     "type": "object",
@@ -88,7 +89,7 @@ What you decide:
 - what_works, what_doesnt: up to 5 each, short, each with its evidence (index, reach, n).
 - audience: up to 5 things commenters ask for, praise or complain about (empty if there are no comments).
 - writer_notes: up to 6 notes, each under 240 characters, that the script writer reads before every Reel: what our
-  viewers respond to in hooks, titles, the moment to open on, pacing, endings and the quiz. They replace the current
+  viewers respond to in hooks, titles, the moment to open on, pacing and endings. They replace the current
   notes, so keep the ones that still hold. Make each concrete and checkable (name the pattern and an example title
   that showed it), never generic ("make the hook better").
 - priorities: up to 5 stories from the backlog below, by their exact story title, to make next, best first; [] when
@@ -110,10 +111,13 @@ What you decide:
   to publish, nothing posted anywhere for two days. Otherwise "". The pipeline makes Reels as fast as its free
   quotas allow; a thin calendar alone is not an alert.
 
-The format's fixed parts are the owner's to change, not yours: the quiz question a Reel ends on (the next Reel
-answers it), stories told as a series, the posting times on Instagram and Facebook, and no reposts (the owner
-turned reposts off for good). Notes must work within them; put a change to one in experiments or owner_actions
-with its evidence.
+The format's fixed parts are the owner's to change, not yours: a Reel ends on its story with no question for the
+comments, stories told as a series, the posting times on Instagram and Facebook, one YouTube Short a day at most
+from the Reels that did best on Instagram, and no reposts (the owner turned reposts off for good). Notes must work
+within them; put a change to one in experiments or owner_actions with its evidence. The owner stopped the quiz (a
+question each Reel ended on, answered in the next) on 18 Oct and will bring it back if reach doesn't recover: from
+25 Oct, say in the diagnosis whether Instagram Reels sent since 18 Oct have a higher median index than the quiz
+Reels of 13 to 17 Oct, with both numbers.
 
 How to read the numbers: "index" is a post's reach over what a post of its age usually gets on its platform (1 is
 typical, 3 is three times that); reposts are left out of comparisons. Instagram reach is views, Facebook's is
@@ -157,7 +161,7 @@ The decisions, each list item numbered from 1:
 {decisions}
 
 Strike out the items that should not be applied: a claim the evidence contradicts or a number that is wrong, a note
-that crosses the brand's lines or removes a fixed part of the format (the quiz question, a series), a priority not in
+that crosses the brand's lines or changes a fixed part of the format (no question for the comments, a series), a priority not in
 the backlog titles, an owner action a person can't do or doesn't need to. Leave sound items alone, even if you would
 word them differently; you can't rewrite anything. Set drop_alert when the alert isn't something a person must deal
 with today. In "review", one line per strike, or [] when everything stands.
@@ -235,8 +239,8 @@ def guard(decisions: dict, titles: list[str], today: date) -> tuple[dict, list[s
             if field == "writer_notes" and POSTING.search(text):
                 dropped.append(f"{field}: {text[:120]} (posting times aren't the writer's)")
                 continue
-            if field == "writer_notes" and AGAINST_QUIZ.search(text):
-                dropped.append(f"{field}: {text[:120]} (the quiz ending is the owner's format)")
+            if field == "writer_notes" and QUIZ_NOTE.search(text):
+                dropped.append(f"{field}: {text[:120]} (the owner stopped the quiz; a Reel ends on its story)")
                 continue
             if field == "writer_notes" and len(text) > NOTE_CHARS:
                 text = text[:NOTE_CHARS].rsplit(" ", 1)[0] + "…"
