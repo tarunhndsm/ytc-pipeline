@@ -3,7 +3,8 @@ trending, and what has gone wrong. Plain statistics, no model: the strategist re
 
 A post's index is its reach over what a post of its age usually gets on its platform, from a line fitted through
 log(reach) against log(age) over the brand's own posts: 1 is typical, 3 is three times that. Reels gather most of
-their views in the first days, so raw views would favour old posts and hide a new one doing well.
+their views in the first days, so raw views would favour old posts and hide a new one doing well. The age is the
+post's age when its reach was last read, since the collector stops reading posts after two weeks.
 """
 
 from __future__ import annotations
@@ -62,20 +63,22 @@ def score(posts: dict, now: datetime) -> list[dict]:
         metrics = post["metrics"]
         engaged = sum(metrics.get(k, 0) for k in ("reactions", "comments", "shares", "saves"))
         day_ago = _at(post.get("history", []), now - timedelta(hours=24))
+        read = min(when(post.get("seen")) or when((post.get("history") or [[None]])[-1][0]) or now, now)
         rows.append({
             "id": post["id"], "platform": post["platform"], "reel": post.get("reel"), "repost": post.get("repost"),
             "video": post.get("video"), "sent": post["sent"], "slot": _slot(sent),
             "weekday": sent.astimezone(reels.IST).strftime("%a"), "age_h": round((now - sent).total_seconds() / 3600, 1),
+            "read_h": round((read - sent).total_seconds() / 3600, 1),
             "reach": reach, "engaged": engaged, "shares": metrics.get("shares", 0), "saves": metrics.get("saves", 0),
             "comments": metrics.get("comments", 0), "rate": round(engaged / reach, 4) if reach else 0.0,
             "gained_24h": round(reach - day_ago) if day_ago is not None else None,
         })
     groups = defaultdict(list)
     for row in rows:
-        if row["age_h"] >= MIN_AGE_H and not row["repost"]:
+        if row["read_h"] >= MIN_AGE_H and not row["repost"]:
             groups[row["platform"]].append(row)
     for group in groups.values():
-        points = [(math.log1p(r["age_h"]), math.log1p(r["reach"])) for r in group]
+        points = [(math.log1p(r["read_h"]), math.log1p(r["reach"])) for r in group]
         a, b = _fit(points) if len(points) >= FIT_MIN else (statistics.median(y for _, y in points), 0.0)
         for row, (x, y) in zip(group, points):
             row["index"] = round(math.exp(y - (a + b * x)), 2)
@@ -210,16 +213,20 @@ def trend(rows: list[dict], posts: dict, days: list[dict], now: datetime) -> dic
 
 def problems(rows: list[dict], store: dict, now: datetime, channels: list[str]) -> list[str]:
     """What has gone wrong or is about to: days without a post, nothing booked ahead, failed posts, recent posts far
-    below the usual, and numbers Buffer stopped refreshing."""
+    below the usual, numbers Buffer stopped refreshing, and Buffer requests running out before the key's window
+    resets. The pipeline's records ("booked": each post due from four days ago on) cover days the collector hasn't
+    read yet."""
     found = []
     today = now.astimezone(reels.IST).date()
     for platform in channels:
+        due_days = {when(p.get("due")).astimezone(reels.IST).date() for p in store.get("booked", [])
+                    if p["platform"] == platform and when(p.get("due"))}
         sent_days = {when(r["sent"]).astimezone(reels.IST).date() for r in rows if r["platform"] == platform}
+        sent_days |= {d for d in due_days if d < today}
         missing = [d for d in (today - timedelta(days=k) for k in (1, 2, 3)) if d not in sent_days]
         if missing:
             found.append(f"{platform}: no post on {', '.join(d.strftime('%a %d %b') for d in sorted(missing))}")
-        covered = sent_days | {when(p.get("due")).astimezone(reels.IST).date() for p in store.get("booked", [])
-                               if p["platform"] == platform and when(p.get("due"))}
+        covered = sent_days | due_days
         empty = [d for d in (today + timedelta(days=k) for k in (0, 1, 2)) if d not in covered]
         if empty:
             found.append(f"{platform}: nothing posted or booked for {', '.join(d.strftime('%a %d %b') for d in empty)}")
@@ -228,12 +235,21 @@ def problems(rows: list[dict], store: dict, now: datetime, channels: list[str]) 
             found.append(f"{platform}: the last 5 posts reach under half of what posts their age usually do "
                          f"(median index {statistics.median(r['index'] for r in recent):.2f})")
     if failed := store.get("failed"):
-        found.append(f"{len(failed)} post(s) failed to publish in the last 14 days: "
+        found.append(f"{len(failed)} post(s) recorded as failed to publish: "
                      + ", ".join(sorted({f"{p['platform']} {p.get('reel') or p['id'][:8]}" for p in failed})[:6]))
-    stale = [p for p in store.get("posts", {}).values() if (when(p.get("sent")) or now) > now - timedelta(days=3)
-             and (when(p.get("metrics_at")) or now - timedelta(days=9)) < now - timedelta(days=2)]
+    read = when(store.get("collected")) or now
+    stale = [p for p in store.get("posts", {}).values() if (when(p.get("sent")) or read) > read - timedelta(days=3)
+             and (when(p.get("metrics_at")) or read - timedelta(days=9)) < read - timedelta(days=2)]
     if stale:
         found.append(f"Buffer hasn't refreshed the numbers of {len(stale)} recent post(s) for over two days")
+    budget = store.get("buffer") or {}
+    at, resets, pace = when(budget.get("at")), when(budget.get("resets")), budget.get("pace_per_day")
+    if at and resets and pace and budget.get("left") is not None:
+        runs_out = at + timedelta(days=budget["left"] / pace)
+        if runs_out < resets:
+            found.append(f"At about {pace} requests a day the Reel pipeline runs out of Buffer requests on "
+                         f"{runs_out.astimezone(reels.IST):%a %d %b}, before the key's 30-day window resets on "
+                         f"{resets.astimezone(reels.IST):%a %d %b}: nothing new can be booked in between")
     return found
 
 
@@ -253,5 +269,7 @@ def analyse(store: dict, feats: dict, days: list[dict], now: datetime, channels:
         "newest": [{"reel": r["reel"], "platform": r["platform"], "age_h": r["age_h"], "reach": r["reach"],
                     "title": feats.get(r["reel"] or "", {}).get("title", "")} for r in young[-9:]],
         "problems": problems(rows, store, now, channels),
+        "buffer": store.get("buffer") or {},
+        "numbers_read": store.get("collected"),
         "rows": rows,
     }

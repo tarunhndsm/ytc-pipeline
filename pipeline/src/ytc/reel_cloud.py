@@ -103,6 +103,9 @@ PROBLEM_HOURS = 3
 # A post Buffer failed goes out again once, this long after the run that finds it; one due longer ago than
 # RESEND_WITHIN is left to the owner.
 RESEND_AFTER, RESEND_WITHIN = timedelta(minutes=10), timedelta(days=1)
+# Buffer fails a post only at its time, so its check (buffer_health) runs after a post was due in the last
+# HEALTH_SINCE, and every HEALTH_HOURS for the channels themselves: the key has 3,000 requests in 30 days.
+HEALTH_SINCE, HEALTH_HOURS = timedelta(minutes=90), 6
 # The brand YouTube channel's daily numbers (youtube.stats), under the Reels' folder: subscribers and 90-day views
 # toward the Partner Program, and each Short's retention.
 STATS = Path("stats") / "youtube"
@@ -279,13 +282,15 @@ def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
     from . import instagram, publish, reels
 
     planned: list[datetime] = []
+    waiting = [(due, folder) for folder in reels.REELS.iterdir()
+               if folder.is_dir() and _wants_short(folder) and (due := _due(folder))]
+    if not waiting:
+        return planned
     try:
         buffered = instagram.posts_by_reel(instagram._env("IG_BUFFER_YOUTUBE_CHANNEL_ID"))
     except Exception as err:
         done["errors"].append(f"couldn't read Buffer's YouTube posts, so none were made: {err}"[:300])
         return planned
-    waiting = [(due, folder) for folder in reels.REELS.iterdir()
-               if folder.is_dir() and _wants_short(folder) and (due := _due(folder))]
     pins = _pins(now)
     # Pinned Shorts first, since the queue frees one place per Short sent; then the Reels still to go out on
     # Instagram, so each keeps its slot; the ones already out catch up after.
@@ -709,6 +714,24 @@ def channel_upkeep(now: datetime, done: dict) -> None:
         done["errors"].append(f"filing the YouTube Shorts into playlists failed: {err}"[:300])
 
 
+def health_due(now: datetime) -> bool:
+    """Whether this run checks Buffer's side: a post was due in the last HEALTH_SINCE, or it is a HEALTH_HOURS hour."""
+    from . import facebook, instagram, reels
+
+    if now.hour % HEALTH_HOURS == 0:
+        return True
+    for name in (instagram.RECORD, facebook.RECORD, instagram.YOUTUBE_RECORD):
+        for path in reels.REELS.glob(f"ak*/{name}"):
+            try:
+                stamp = json.loads(path.read_text(encoding="utf-8"))["dueAt"]
+                due = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
+            if now - HEALTH_SINCE <= due <= now:
+                return True
+    return False
+
+
 def buffer_health(now: datetime, done: dict, dry: bool = False) -> None:
     """Buffer's side, in one request: the brand's three channels connected with their queues running, and each post
     due in the last RESEND_WITHIN sent. A post Buffer failed goes out again once, RESEND_AFTER from now with the same
@@ -823,7 +846,7 @@ def work(dry: bool = False) -> dict:
     except Exception as err:
         buffered, scheduling = {}, False
         done["errors"].append(f"couldn't read Buffer's Instagram posts, so none were scheduled: {err}"[:300])
-    if scheduling:
+    if scheduling and health_due(now):
         try:
             buffer_health(now, done, dry)
         except publish.BufferBusy as err:

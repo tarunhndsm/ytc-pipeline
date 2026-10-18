@@ -29,6 +29,8 @@ THINK_HOURS = range(6, 12)
 THINK_LATE = timedelta(hours=30)
 SCOUT_EVERY = timedelta(hours=20)
 LISTEN_EVERY = timedelta(hours=11)
+# Buffer refreshes a post's numbers every few hours, and the Reel pipeline books with the same limited key.
+COLLECT_EVERY = timedelta(hours=23)
 
 
 def _json(path: Path, default):
@@ -95,6 +97,11 @@ def render(brand: Brand, analysis: dict, trends: dict, comments: list[dict], tho
     lines = [f"# Growth desk: {brand.name}", "",
              f"Updated {_ist(now)}. {analysis['posts']} posts tracked across {', '.join(brand.channels)}. "
              f"The strategist last ran {_ist(collect.when(state['think'])) if state.get('think') else 'never'}.", ""]
+    if budget := analysis.get("buffer"):
+        read = collect.when(analysis.get("numbers_read"))
+        lines += [f"Post numbers last read from Buffer {_ist(read) if read else 'never'}. The key has {budget['left']:,} "
+                  f"requests left until {_ist(collect.when(budget['resets']))}, and the Reel pipeline uses about "
+                  f"{budget['pace_per_day']} a day; the desk reads once a day, only when the pipeline can spare it.", ""]
     decisions = (thought or {}).get("decisions") or (state.get("last_decisions") or {})
     if decisions.get("diagnosis"):
         lines += ["## Diagnosis", "", decisions["diagnosis"], ""]
@@ -209,15 +216,18 @@ def run(brand: Brand, dry: bool = False, think: bool | None = None, scout_now: b
     errors: list[str] = []
     channels = {p: os.environ[e] for p, e in brand.channels.items() if os.environ.get(e)}
 
-    if (key := os.environ.get(brand.buffer_key)) and channels:
+    if not (key := os.environ.get(brand.buffer_key)) or not channels:
+        errors.append(f"collector: {brand.buffer_key} or the Buffer channel ids aren't set")
+    elif _due(store, "read_at", COLLECT_EVERY, now):
         try:
             store = collect.collect(dataclasses.replace(brand, channels=channels), store, key, levers.made_posts(), now)
             errors += [f"collector: {e}" for e in store.get("collect_errors", [])]
         except Exception as err:
             log.exception("collecting from Buffer failed")
+            store["read_at"] = now.isoformat(timespec="minutes")
             errors.append(f"collector: {err}"[:300])
-    else:
-        errors.append(f"collector: {brand.buffer_key} or the Buffer channel ids aren't set")
+    if queue := getattr(levers, "queue", None):
+        store["booked"], store["failed"] = queue(now)
 
     days = collect.youtube_days(brand.youtube_stats)
     token = _youtube_token(brand)

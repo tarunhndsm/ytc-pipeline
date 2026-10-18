@@ -71,6 +71,9 @@ def _buffer(query: str, variables: dict | None = None) -> dict:
 
 @functools.cache
 def _organization() -> str:
+    # Buffer allows the key 3,000 requests in 30 days, and a lookup every hourly run would spend 720 of them.
+    if organization := os.environ.get("IG_BUFFER_ORGANIZATION_ID"):
+        return organization
     return _buffer("query { account { organizations { id } } }")["account"]["organizations"][0]["id"]
 
 

@@ -32,7 +32,8 @@ BRAND_SECRET = "ankahi-kathayein"
 # Reel factory's picture searches send it). Of YouTube's sign-ins, only the brand channel's (`ytc auth --brand`),
 # never the Days of Odd channel's.
 BRAND_ENV = ("IG_GEMINI_API_KEY", "IG_BUFFER_API_KEY", "IG_BUFFER_CHANNEL_ID", "IG_BUFFER_YOUTUBE_CHANNEL_ID",
-             "IG_BUFFER_FACEBOOK_CHANNEL_ID", "CLOUDINARY_URL", "YTC_NTFY_TOPIC", "YTC_CONTACT")
+             "IG_BUFFER_FACEBOOK_CHANNEL_ID", "IG_BUFFER_ORGANIZATION_ID", "CLOUDINARY_URL", "YTC_NTFY_TOPIC",
+             "YTC_CONTACT")
 BRAND_TOKEN = ROOT / "secrets" / "ig_youtube_token.json"
 
 

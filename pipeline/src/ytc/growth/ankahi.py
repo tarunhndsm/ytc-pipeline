@@ -62,6 +62,27 @@ def made_posts() -> dict[str, str]:
     return ids
 
 
+def queue(now: datetime) -> tuple[list[dict], list[dict]]:
+    """The posts the pipeline's records have due from four days ago on, and the ones it recorded as failed, on each
+    channel: reading them costs none of the Buffer key's requests."""
+    due, failed = [], []
+    for folder in reels.REELS.glob("ak*"):
+        for platform in ("instagram", "facebook", "youtube"):
+            record = reels._read(folder / f"{platform}.json") or {}
+            if not isinstance(record, dict) or not record.get("id") or record.get("withdrawn"):
+                continue
+            post = {"id": record["id"], "platform": platform, "reel": folder.name, "due": record.get("dueAt")}
+            try:
+                at = datetime.fromisoformat((record.get("dueAt") or "").replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if record.get("status") == "error":
+                failed.append(post)
+            elif at > now - timedelta(days=4):
+                due.append(post)
+    return due, failed
+
+
 def _made() -> dict[str, tuple[str, str]]:
     text = reel_writer.BACKLOG.read_text(encoding="utf-8")
     section = text.split("\n## Made", 1)[1].split("\n## ", 1)[0] if "\n## Made" in text else ""
