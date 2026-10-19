@@ -105,8 +105,11 @@ Each line below has its words, what its picture should show, and a sheet of cand
 candidate found for line 3), with their titles. Any candidate may go to any line, but each to one line only.
 
 For every line, rank up to 3 labels, best first. Prefer, in this order: a painting or sculpture of this very moment
-of the story, or of the deity or person the line names; the same deity, person or place in another scene; a picture
-that sets the scene (a court, a forest, a river) without contradicting the line. Go by the titles as much as the
+of the story; a portrait or icon of the deity or person the line names, doing nothing that belongs to another story;
+a picture that sets the scene (a court, a forest, a river, a palace) without contradicting the line; last, the same
+deity, person or place in another scene, and only when nothing in it (an action, a weapon, a battle, a mood)
+contradicts the line: never a fight or a killing on a line about worship, love, a meal or a household. On 19 Oct two
+Reels failed their final review for the right figures shown in other episodes. Go by the titles as much as the
 pictures. Line 1's picture is the Reel's first frame in the feed, where viewers decide in a second whether to stay:
 rank first the most vivid, colourful painting of the figure line 1 names, clear at phone size (Ravana's ten heads in
 orange and gold drew 65,000 plays); Reels that opened on a grey sculpture, a flower or a snake lost most viewers at
