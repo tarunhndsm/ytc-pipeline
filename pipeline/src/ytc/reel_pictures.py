@@ -2,7 +2,8 @@
 collections for each line's search terms (reel_tools), the best few by SigLIP (rank.py), one look by a vision model
 at each line's candidates to choose, and a second look at each chosen picture, as the renderer will open it, to find
 its subject and faces and catch what mustn't be shown. The crops, caption heights and credits follow from that by
-rule, as plates.py lays pictures out.
+rule, as plates.py lays pictures out. A try that leaves too many lines without a picture keeps the ones it found for
+the story's next try, which looks only for the rest.
 
     python -m ytc.reel_pictures <reel folder>     write <folder>/short.yaml from its work/script.json
 """
@@ -56,6 +57,10 @@ PICTURES = "work/pictures.json"
 SPARES = "work/spares.json"
 # A Reel the judge failed on its pictures (reel_factory.send_back): the pictures it found fault with, never chosen again.
 AVOID = "work/avoid.json"
+# The pictures a failed try accepted, each with the words of the line it was framed for, since it fits only that line.
+# Of the 12 stories set aside for pictures by 19 Oct whose tries could be traced, 4 had every line but at most four
+# pictured on one try or another.
+KEPT = "work/kept.json"
 HIT_KEYS = ("ref", "title", "date", "url", "page", "thumb", "source", "license", "artist", "width", "height")
 FRAMED_KEYS = ("size", "subject", "faces", "kind", "hindi")
 # A title naming another faith's figures or books, or a Mughal court, never reaches the models: both prompts forbid
@@ -574,22 +579,52 @@ def save(folder: Path, spec: dict, chosen: dict[int, dict], spares: dict[int, li
     return path
 
 
+def kept_picks(folder: Path, beats: list[dict], avoid: set[str]) -> dict[int, dict]:
+    """The pictures an earlier try of this story accepted, by line: those whose line still has the same words and
+    that the judge didn't find fault with."""
+    try:
+        saved = json.loads((folder / KEPT).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    own, kept = own_lines(beats), {}
+    for number, hit in saved.items():
+        number = int(number)
+        if number in own and hit.pop("words", None) == beats[number - 1]["text"] and hit["ref"] not in avoid:
+            kept[number] = hit
+    return kept
+
+
+def keep_picks(folder: Path, beats: list[dict], chosen: dict[int, dict]) -> None:
+    """Keep the accepted pictures for the story's next try."""
+    (folder / KEPT).write_text(json.dumps(
+        {n: {k: hit[k] for k in (*HIT_KEYS, *FRAMED_KEYS) if hit.get(k) is not None} | {"words": beats[n - 1]["text"]}
+         for n, hit in sorted(chosen.items())}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+
+
 def picture(folder: Path) -> Path:
     """Choose and frame every picture for the Reel in `folder` and write its short.yaml."""
     draft = json.loads((folder / reel_writer.SCRIPT).read_text(encoding="utf-8"))
     beats = draft["script"]["beats"]
     story = f"{draft['row']['story']} ({draft['row']['source']})"
     per_line = candidates(beats)
+    avoid: set[str] = set()
     if (folder / AVOID).exists():
         avoid = set(json.loads((folder / AVOID).read_text(encoding="utf-8"))["refs"])
         per_line = {n: [h for h in hits if h["ref"] not in avoid] for n, hits in per_line.items()}
         log.info("left out %d pictures the judge found fault with", len(avoid))
+    if kept := kept_picks(folder, beats, avoid):
+        refs = {hit["ref"] for hit in kept.values()}
+        per_line = {n: [h for h in hits if h["ref"] not in refs] for n, hits in per_line.items()}
+        log.info("kept the pictures an earlier try accepted for lines %s", sorted(kept))
     log.info("%d candidates for %d lines", len({h["ref"] for hits in per_line.values() for h in hits}), len(per_line))
     shown = shortlist(beats, per_line)
     log.info("shortlisted %d pictures", sum(map(len, shown.values())))
+    # Every line keeps its spares (below); only the lines without a kept picture are chosen and framed.
+    todo = {n: hits for n, hits in shown.items() if n not in kept}
     with reel_writer.gemini_only():
-        ranked = choose(beats, shown, story, f"{draft['id']} pictures")
-        chosen = frame_all(beats, ranked, shown, f"{draft['id']} framing")
+        ranked = choose(beats, todo, story, f"{draft['id']} pictures") if todo else {}
+        chosen = kept | frame_all(beats, ranked, todo, f"{draft['id']} framing")
+    accepted = dict(chosen)
     if 1 not in chosen and chosen:
         # The hook can't go without a picture: it takes the next line's, which then shows it again.
         log.info("line 1 takes line %d's picture", min(chosen))
@@ -598,7 +633,9 @@ def picture(folder: Path) -> Path:
     missing = [n for n in own if n not in chosen]
     # The factory allows more on a story's last try (reel_factory.LAST_TRY_REUSED).
     if 1 in missing or len(missing) > int(os.environ.get("YTC_MAX_REUSED") or MAX_REUSED):
+        keep_picks(folder, beats, accepted)
         raise LookupError(f"no usable picture for lines {missing}")
+    (folder / KEPT).unlink(missing_ok=True)
     spec = reel_writer.spec_fields(draft)
     shows = {n: n for n in chosen} | {n: 1 for n in range(1, len(beats) + 1) if n not in own}
     for number in range(1, len(beats) + 1):
