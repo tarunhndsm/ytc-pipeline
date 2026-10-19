@@ -18,6 +18,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -84,6 +85,215 @@ SOUTH_ASIA = re.compile(r"india|nepal|pakistan|bangladesh|sri lanka|ceylon|decca
                         r"andhra|telangana|karnataka|kerala|odisha|orissa|gujarat|maharashtra|bihar|assam|hyderabad|"
                         r"golconda|bijapur|mysore|thanjavur|tanjore|madurai|lucknow|awadh|oudh|murshidabad|patna|"
                         r"delhi|agra|lahore|sindh|mathura|varanasi|benares|nathdwara|kalighat)\b", re.I)
+# The epics' and Puranas' people, as museum titles spell them. A picture whose title names some of them and none the
+# story names shows another story: both prompts forbid that, yet on 20 Oct ak066 (Sita gives Hanuman the Choodamani)
+# showed "Pradyumna and Samvara fight with maces" for Hanuman crossing the ocean, and the judge, reading the credits,
+# took another of its paintings for Pradyumna too. Gods aren't listed: they turn up in every kind of story.
+FIGURES = {
+    "rama": "rama|ramachandra|raghava|raghunatha",
+    "sita": "sita|seeta|janaki|vaidehi",
+    "lakshmana": "lakshmana?|laksmana?|laxmana?",
+    "bharata": "bharata",
+    "shatrughna": "shatrughna|satrughna",
+    "dasharatha": "dasharatha|dasaratha|dashrath",
+    "kaikeyi": "kaikeyi",
+    "kausalya": "kausalya|kaushalya",
+    "hanuman": "hanuman|hanumat|hanumana|hanumanji|maruti|anjaneya|bajrang ?bali",
+    "sugriva": "sugriva|sugreeva",
+    "vali": "vali|valin",
+    "angada": "angada",
+    "jambavan": "jambavan|jambavat|jambavant|jamvant",
+    "jatayu": "jatayus?",
+    "ravana": "ravana?|dashanana|dasanana|dashagriva|dasagriva",
+    "kumbhakarna": "kumbha[ -]?karna|kumbhakaran",
+    "vibhishana": "vibhishana?|vibhisana|bibhishana?",
+    "indrajit": "indrajit|indrajita|meghanada|meghnad",
+    "mandodari": "mandodari",
+    "surpanakha": "surpanakha|shurpanakha|surpnakha|soorpanakha",
+    "ahalya": "ahalya|ahilya",
+    "shabari": "shabari|sabari",
+    "vishvamitra": "vishvamitra|visvamitra|vishwamitra|viswamitra",
+    "vasishtha": "vasishtha|vasistha|vashishtha|vashistha|vasishta|vasista",
+    "bharadvaja": "bharadvaja|bharadwaja|bharadwaj",
+    "krishna": "krishna|krsna|krisna|kanha|kanhaiya|govinda|gopala?|s(?:h)?ri ?nathji",
+    "radha": "radha|radhika",
+    "balarama": "bala[ -]?rama|balaram|baladeva|balabhadra",
+    "yashoda": "yashoda|yasoda|jasoda",
+    "nanda": "nanda",
+    "devaki": "devaki",
+    "vasudeva": "vasudeva",
+    "kamsa": "kamsa|kansa",
+    "putana": "putana",
+    "kaliya": "kaliya",
+    "rukmini": "rukmini|rukmani",
+    "satyabhama": "satyabhama",
+    "jambavati": "jambavati",
+    "pradyumna": "pradyumna",
+    "sambara": "sambara|shambara|samvara",
+    "aniruddha": "aniruddha",
+    "banasura": "bana[ -]?asura",
+    "jarasandha": "jarasandha",
+    "shishupala": "shishupala?|sisupala",
+    "sudama": "sudama",
+    "narakasura": "naraka[ -]?asura",
+    "subhadra": "subhadra",
+    "uddhava": "uddhava",
+    "akrura": "akrura",
+    "arjuna": "arjuna",
+    "bhima": "bhima|bhimasena|bheem",
+    "yudhishthira": "yudhishthira|yudhisthira|yudhishtira",
+    "nakula": "nakula",
+    "sahadeva": "sahadeva",
+    "draupadi": "draupadi|panchali",
+    "kunti": "kunti",
+    "pandu": "pandu",
+    "pandavas": "pandavas?",
+    "kauravas": "kauravas?",
+    "dhritarashtra": "dhritarashtra|dhrtarastra|dhritarastra",
+    "gandhari": "gandhari",
+    "duryodhana": "duryodhana?",
+    "duhshasana": "duhshasana|dushasana|duhsasana",
+    "karna": "karna",
+    "bhishma": "bhishma|bhisma|bheeshma",
+    "drona": "drona|dronacharya",
+    "ashvatthama": "ashvatthaman?|asvatthaman?|ashwatthaman?",
+    "abhimanyu": "abhimanyu",
+    "ghatotkacha": "ghatotkacha",
+    "shakuni": "shakuni|sakuni",
+    "vidura": "vidura",
+    "jayadratha": "jayadratha",
+    "shikhandi": "shikhandin?|sikhandin?",
+    "ekalavya": "ekalavya|eklavya",
+    "parikshit": "parikshit|pariksit|parikshita",
+    "janamejaya": "janamejaya",
+    "ajamila": "ajamila",
+    "prahlada": "prahlada?",
+    "hiranyakashipu": "hiranyakashipu|hiranyakasipu",
+    "dhruva": "dhruva",
+    "markandeya": "markandeya",
+    "nala": "nala",
+    "damayanti": "damayanti",
+    "harishchandra": "harishchandra|harischandra",
+    "shakuntala": "shakuntala|sakuntala",
+    "dushyanta": "dushyanta|dusyanta|dushmanta",
+    "mahishasura": "mahisha[ -]?asura|mahisasura",
+    "parashurama": "parashu[ -]?rama|parasurama|parsuram|parshuram",
+    "narada": "narada",
+    "durvasa": "durvasas?",
+    "agastya": "agastya",
+    "valmiki": "valmiki",
+    "vyasa": "vyasa|vedavyasa",
+    "vritra": "vritra|vritrasura|vrtra",
+}
+# The same people in the Hindi of a story's lines and summary, which name them more often than its English briefs:
+# ak056 (Bharata's army at Bharadvaja's hermitage) names Rama only in Hindi.
+HINDI_FIGURES = {
+    "rama": "राम|श्रीराम|रामजी|रामचंद्र|रामचन्द्र|रघुनाथ|राघव",
+    "sita": "सीता|सीताजी|जानकी|वैदेही|सिया",
+    "lakshmana": "लक्ष्मण|लखन",
+    "bharata": "भरत",
+    "shatrughna": "शत्रुघ्न",
+    "dasharatha": "दशरथ",
+    "kaikeyi": "कैकेयी|कैकयी",
+    "kausalya": "कौशल्या|कौसल्या",
+    "hanuman": "हनुमान|हनुमानजी|हनुमंत|हनुमन्त|मारुति|आंजनेय|बजरंगबली|पवनपुत्र",
+    "sugriva": "सुग्रीव",
+    "vali": "बाली",
+    "angada": "अंगद",
+    "jambavan": "जामवंत|जाम्बवान|जाम्बवंत|जांबवान",
+    "jatayu": "जटायु",
+    "ravana": "रावण|दशानन|लंकेश",
+    "kumbhakarna": "कुंभकर्ण|कुम्भकर्ण",
+    "vibhishana": "विभीषण",
+    "indrajit": "इंद्रजीत|इन्द्रजीत|मेघनाद",
+    "mandodari": "मंदोदरी|मन्दोदरी",
+    "surpanakha": "शूर्पणखा|सूर्पणखा",
+    "ahalya": "अहल्या|अहिल्या",
+    "shabari": "शबरी",
+    "vishvamitra": "विश्वामित्र",
+    "vasishtha": "वसिष्ठ|वशिष्ठ",
+    "bharadvaja": "भरद्वाज|भारद्वाज",
+    "krishna": "कृष्ण|श्रीकृष्ण|कान्हा|कन्हैया|गोविंद|गोविन्द|गोपाल|माधव|केशव|मुरारी|वासुदेव",
+    "radha": "राधा|राधिका|राधारानी",
+    "balarama": "बलराम|बलदेव|बलभद्र|दाऊ",
+    "yashoda": "यशोदा",
+    "nanda": "नंद|नन्द|नंदबाबा",
+    "devaki": "देवकी",
+    "vasudeva": "वसुदेव",
+    "kamsa": "कंस",
+    "putana": "पूतना",
+    "kaliya": "कालिया|कालिय",
+    "rukmini": "रुक्मिणी|रुक्मणी",
+    "satyabhama": "सत्यभामा",
+    "jambavati": "जाम्बवती|जांबवती",
+    "pradyumna": "प्रद्युम्न",
+    "sambara": "शंबर|शम्बर|शंबरासुर|शम्बरासुर",
+    "aniruddha": "अनिरुद्ध",
+    "banasura": "बाणासुर",
+    "jarasandha": "जरासंध|जरासन्ध",
+    "shishupala": "शिशुपाल",
+    "sudama": "सुदामा",
+    "narakasura": "नरकासुर",
+    "subhadra": "सुभद्रा",
+    "uddhava": "उद्धव",
+    "akrura": "अक्रूर",
+    "arjuna": "अर्जुन",
+    "bhima": "भीम|भीमसेन",
+    "yudhishthira": "युधिष्ठिर",
+    "nakula": "नकुल",
+    "sahadeva": "सहदेव",
+    "draupadi": "द्रौपदी|पांचाली|पाञ्चाली",
+    "kunti": "कुंती|कुन्ती",
+    "pandu": "पांडु|पाण्डु",
+    "pandavas": "पांडव|पाण्डव|पांडवों|पाण्डवों",
+    "kauravas": "कौरव|कौरवों",
+    "dhritarashtra": "धृतराष्ट्र",
+    "gandhari": "गांधारी|गान्धारी",
+    "duryodhana": "दुर्योधन",
+    "duhshasana": "दुःशासन|दुशासन",
+    "karna": "कर्ण",
+    "bhishma": "भीष्म",
+    "drona": "द्रोण|द्रोणाचार्य",
+    "ashvatthama": "अश्वत्थामा",
+    "abhimanyu": "अभिमन्यु",
+    "ghatotkacha": "घटोत्कच",
+    "shakuni": "शकुनि",
+    "vidura": "विदुर",
+    "jayadratha": "जयद्रथ",
+    "shikhandi": "शिखंडी|शिखण्डी",
+    "ekalavya": "एकलव्य",
+    "parikshit": "परीक्षित",
+    "janamejaya": "जनमेजय",
+    "ajamila": "अजामिल",
+    "prahlada": "प्रह्लाद|प्रहलाद",
+    "hiranyakashipu": "हिरण्यकशिपु|हिरण्यकश्यप",
+    "dhruva": "ध्रुव",
+    "markandeya": "मार्कंडेय|मार्कण्डेय",
+    "nala": "नल",
+    "damayanti": "दमयंती|दमयन्ती",
+    "harishchandra": "हरिश्चंद्र|हरिश्चन्द्र",
+    "shakuntala": "शकुंतला|शकुन्तला",
+    "dushyanta": "दुष्यंत|दुष्यन्त",
+    "mahishasura": "महिषासुर",
+    "parashurama": "परशुराम",
+    "narada": "नारद",
+    "durvasa": "दुर्वासा",
+    "agastya": "अगस्त्य",
+    "valmiki": "वाल्मीकि",
+    "vyasa": "व्यास|वेदव्यास",
+    "vritra": "वृत्र|वृत्रासुर",
+}
+# A book or a temple names no one: "a Markandeya Purana", "the Maha-bharata", "Vishnu from Gita Govinda", "Anasuya
+# feeding the Hindu Trinity, The Krishna-Sudama Temple of Porbandar".
+NOT_PEOPLE = re.compile(r"\bmaha[ -]?bharata\b|\bmarkandeya[ -]purana\b|\bgita[ -]?govinda\b|"
+                        r"\b[\w-]+[ -](?:temple|mandir)\b", re.I)
+_FIGURE = re.compile(r"\b(?:" + "|".join(f"(?P<{name}>{spelt})" for name, spelt in FIGURES.items()) + r")\b", re.I)
+# Devanagari vowel signs aren't word characters to `re`, so \b falls inside words (राम in परशुराम); a name has to stand
+# between characters from outside the script, or the danda.
+_DEVANAGARI = r"[\u0900-\u0963\u0966-\u097F]"
+_HINDI_FIGURE = re.compile(f"(?<!{_DEVANAGARI})(?:"
+                           + "|".join(f"(?P<{name}>{spelt})" for name, spelt in HINDI_FIGURES.items())
+                           + f")(?!{_DEVANAGARI})")
 MET_GAP = 1.0
 MET_SEARCHES = 12
 _met_lock = threading.Lock()
@@ -194,6 +404,30 @@ def _search(term: str) -> list[dict]:
 
 def other_faith(title: str) -> bool:
     return bool(OTHER_FAITH.search(NOT_OTHER_FAITH.sub("", title)))
+
+
+def figures(text: str) -> set[str]:
+    """The people of the epics and Puranas that `text` names, in English or Hindi, by their keys in FIGURES."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return ({found.lastgroup for found in _FIGURE.finditer(NOT_PEOPLE.sub(" ", plain.replace("_", " ")))}
+            | {found.lastgroup for found in _HINDI_FIGURE.finditer(unicodedata.normalize("NFC", text))})
+
+
+def other_story(title: str, named: set[str]) -> bool:
+    """Whether a picture's title names people of the epics but none of those the story names."""
+    shown = figures(title)
+    return bool(shown) and not shown & named
+
+
+def story_figures(draft: dict) -> set[str]:
+    """The people the story names: in its title, source, brief and summary, and in its lines' words, briefs and
+    search terms (not those of a line that shows another Reel's picture)."""
+    row, script = draft["row"], draft["script"]
+    own = [script["beats"][n - 1] for n in own_lines(script["beats"])]
+    return figures(" ".join([row.get("story") or "", row.get("source") or "", row.get("picture") or "",
+                             row.get("hook") or "", script.get("summary") or ""]
+                            + [f"{b.get('text') or ''} {b.get('picture') or ''} {' '.join(b.get('search') or [])}"
+                               for b in own]))
 
 
 def own_lines(beats: list[dict]) -> list[int]:
@@ -610,12 +844,17 @@ def picture(folder: Path) -> Path:
     beats = draft["script"]["beats"]
     story = f"{draft['row']['story']} ({draft['row']['source']})"
     per_line = candidates(beats)
+    named = story_figures(draft)
+    if elsewhere := {h["ref"] for hits in per_line.values() for h in hits if other_story(h.get("title") or "", named)}:
+        per_line = {n: [h for h in hits if h["ref"] not in elsewhere] for n, hits in per_line.items()}
+        log.info("left out %d pictures whose titles name only other stories' people", len(elsewhere))
     avoid: set[str] = set()
     if (folder / AVOID).exists():
         avoid = set(json.loads((folder / AVOID).read_text(encoding="utf-8"))["refs"])
         per_line = {n: [h for h in hits if h["ref"] not in avoid] for n, hits in per_line.items()}
         log.info("left out %d pictures the judge found fault with", len(avoid))
-    if kept := kept_picks(folder, beats, avoid):
+    if kept := {n: hit for n, hit in kept_picks(folder, beats, avoid).items()
+                if not other_story(hit.get("title") or "", named)}:
         refs = {hit["ref"] for hit in kept.values()}
         per_line = {n: [h for h in hits if h["ref"] not in refs] for n, hits in per_line.items()}
         log.info("kept the pictures an earlier try accepted for lines %s", sorted(kept))
