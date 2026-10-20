@@ -87,14 +87,20 @@ class PaintTests(unittest.TestCase):
         picture = io.BytesIO()
         Image.new("RGB", (reel_art.WIDTH, reel_art.HEIGHT), "orange").save(picture, "JPEG")
         self.jpeg = picture.getvalue()
-        host = patch.object(publish, "host_image",
-                            side_effect=lambda path, public_id: f"https://res.cloudinary.com/demo/{public_id}.jpg")
+        self.hosted: list[Path] = []
+        host = patch.object(publish, "host_image", side_effect=self._host)
         host.start()
         self.addCleanup(host.stop)
+
+    def _host(self, path: Path, public_id: str) -> str:
+        self.assertTrue(path.exists())
+        self.hosted.append(path)
+        return f"https://res.cloudinary.com/demo/{public_id}.jpg"
 
     def test_a_painting_is_hosted_and_credited_as_made_with_ai(self) -> None:
         with patch.object(reel_art, "_run", return_value=(self.jpeg, 131.88)):
             hit = reel_art.paint("ak999", 3, {"picture": "Sage Durvasa blesses young Kunti"})
+        self.assertFalse(self.hosted[0].exists(), "the painting's local copy was left behind")
         self.assertTrue(hit["ref"].startswith("ai:ak999-03-"))
         self.assertEqual((hit["source"], hit["license"], hit["artist"]), ("AI", "AI-generated", "FLUX.2 klein"))
         self.assertEqual((hit["width"], hit["height"]), (reel_art.WIDTH, reel_art.HEIGHT))

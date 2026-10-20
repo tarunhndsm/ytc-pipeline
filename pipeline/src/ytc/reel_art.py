@@ -97,7 +97,10 @@ def paint(reel: str, number: int, beat: dict) -> dict | None:
     public_id = f"{CLOUDINARY_FOLDER}/{reel}-{number:02d}-{seed}"
     path = Path(tempfile.gettempdir()) / f"{reel}-{number:02d}-{seed}.jpg"
     image.save(path, "JPEG", quality=92)
-    url = publish.host_image(path, public_id)
+    try:
+        url = publish.host_image(path, public_id)
+    finally:
+        path.unlink(missing_ok=True)
     return {"ref": f"ai:{reel}-{number:02d}-{seed}", "title": f"AI painting: {beat['picture'][:160]}", "url": url,
             "page": url, "thumb": url, "source": SOURCE, "license": LICENSE, "artist": name, "width": image.width,
             "height": image.height}
