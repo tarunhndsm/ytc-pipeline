@@ -382,6 +382,13 @@ the Puranas, told in Hindi. For each one:
   और अरुण" or "गंगा देवी की मूर्ति". Never the line's own story: a picture titled "River Goddess Ganga" is "गंगा देवी की
   मूर्ति" even on a line about someone drowning.
 """
+# A painting's letters are made up, unlike a museum picture's inscription: FLUX wrote captions that only look like
+# Devanagari on three of ak037's four (20 Oct), "no text" in the prompt notwithstanding.
+PAINTED_RULES = """
+These pictures are new paintings, not museum pictures: ok is also false for any letters or script painted on one (a
+caption, a label, an inscription, a signature), even small ones.
+"""
+PAINT_TRIES = 2
 
 
 def _met(term: str, limit: int) -> list[dict]:
@@ -603,7 +610,7 @@ def _opened(item: tuple[int, dict]) -> tuple[int, dict, bytes | None]:
 
 
 def frame_all(beats: list[dict], ranked: dict[int, list[dict]], shown: dict[int, list[dict]],
-              purpose: str) -> dict[int, dict]:
+              purpose: str, rules: str = "") -> dict[int, dict]:
     """Each line's picture, looked at as the renderer opens it: its size, subject and faces, kind and Hindi caption.
     A picture found wanting gives way to the line's next choice, then to the rest of its shortlist, for up to
     FRAME_ROUNDS more looks; a line whose candidates all fail is left out."""
@@ -623,7 +630,7 @@ def frame_all(beats: list[dict], ranked: dict[int, list[dict]], shown: dict[int,
             break
         with ThreadPoolExecutor(4) as workers:
             opened = list(workers.map(_opened, trial.items()))
-        parts: list = [FRAME_PROMPT]
+        parts: list = [FRAME_PROMPT + rules]
         for number, hit, image in opened:
             if image:
                 parts += [f"\nLine {number}: \"{beats[number - 1]['text']}\" (picture: {hit['title'][:90]})", image]
@@ -878,12 +885,17 @@ def painted(reel: str, beats: list[dict], chosen: dict[int, dict], fits: dict[in
 
 
 def paint_framed(reel: str, beats: list[dict], lines: list[int]) -> dict[int, dict]:
-    """Paintings (reel_art) for `lines`, most needed first, that passed the framing check, by line."""
-    made = reel_art.paint_lines(reel, beats, lines)
-    if not made:
-        return {}
-    hits = {n: [hit] for n, hit in made.items()}
-    framed = frame_all(beats, hits, hits, f"{reel} painted framing")
+    """Paintings (reel_art) for `lines`, most needed first, that passed the framing check, by line; a line whose
+    painting fails it is painted again, up to PAINT_TRIES paintings in all."""
+    framed: dict[int, dict] = {}
+    todo = lines
+    for _ in range(PAINT_TRIES):
+        if not (made := reel_art.paint_lines(reel, beats, todo)):
+            break
+        hits = {n: [hit] for n, hit in made.items()}
+        framed |= frame_all(beats, hits, hits, f"{reel} painted framing", PAINTED_RULES)
+        if not (todo := [n for n in made if n not in framed]):
+            break
     log.info("paintings for lines %s passed the framing check", sorted(framed))
     return framed
 

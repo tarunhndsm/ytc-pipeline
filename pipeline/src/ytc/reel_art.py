@@ -44,10 +44,13 @@ WEAK = ("elsewhere", "none")
 SOURCE = "AI"
 LICENSE = "AI-generated"
 CLOUDINARY_FOLDER = "ankahikathayein/art"
-STYLE = ("Indian miniature painting in the 18th-century Pahari style: opaque watercolour on paper, fine brushwork, "
-         "flat perspective, rich natural pigments, every figure fully clothed in traditional Indian dress, Hindu "
-         "iconography as in the old paintings. Only the figures the brief names, each large and clear. One clear "
-         "scene filling a tall vertical picture; no text, letters, border or frame.")
+# Not the museums' words for the paintings ("opaque watercolour on paper"): they bring the catalogue's margins with
+# them, and FLUX writes a made-up caption there.
+STYLE = ("Indian miniature painting in the Pahari style: fine brushwork, flat perspective, rich natural pigments, "
+         "every figure fully clothed in traditional Indian dress, Hindu iconography as in the old paintings. Only "
+         "the figures the brief names, each large and clear. The painted scene fills the whole tall vertical picture "
+         "edge to edge, with no margin, border or frame, and no writing anywhere: no inscription, caption, label or "
+         "signature.")
 # Line 1's picture is the Reel's first frame in the feed (reel_pictures.CHOOSE_PROMPT).
 FIRST = "The figure large and close, vivid and colourful, clear at phone size. "
 # How the old paintings show the figures a brief names, at most MAX_ICONS of them: the briefs give only the name, and
@@ -139,7 +142,7 @@ def paint(reel: str, number: int, beat: dict) -> dict | None:
 
 def paint_lines(reel: str, beats: list[dict], numbers: list[int]) -> dict[int, dict]:
     """Paintings for up to MAX_PAINTED of `numbers` (most needed first), by line; fewer when the day's neurons run
-    out or a model fails."""
+    out or a model fails. What they cost comes off YTC_PAINT_NEURONS, for the step's next call."""
     if not ready() or not numbers:
         return {}
     left = float(os.environ.get("YTC_PAINT_NEURONS") or DAILY_NEURONS)
@@ -158,5 +161,6 @@ def paint_lines(reel: str, beats: list[dict], numbers: list[int]) -> dict[int, d
 
     with ThreadPoolExecutor(3) as workers:
         made = {number: hit for number, hit in workers.map(one, todo) if hit}
+    os.environ["YTC_PAINT_NEURONS"] = str(max(0.0, left - NEURONS_EACH * len(made)))
     log.info("painted lines %s of %s", sorted(made), todo)
     return made

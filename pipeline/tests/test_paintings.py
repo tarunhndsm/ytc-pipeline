@@ -73,6 +73,12 @@ class PaintLinesTests(unittest.TestCase):
         self.out = {2}
         self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [1, 2, 3])), [1, 3])
 
+    def test_what_a_call_paints_comes_off_the_neurons_the_next_one_has(self) -> None:
+        with patch.dict(os.environ, {"YTC_PAINT_NEURONS": str(3 * reel_art.NEURONS_EACH + 30)}):
+            self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [1, 2])), [1, 2])
+            self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [3, 4])), [3])
+            self.assertEqual(reel_art.paint_lines("ak999", self.beats, [5]), {})
+
 
 class PaintTests(unittest.TestCase):
     """One painting: made, hosted, credited as AI, and its neurons counted."""
@@ -153,6 +159,17 @@ class PictureStepTests(unittest.TestCase):
         with patch.object(reel_pictures, "paint_framed", return_value={}) as paint:
             reel_pictures.painted("ak999", beats, chosen, fits)
         self.assertEqual(paint.call_args.args[2], [1, 3, 4])
+
+    def test_a_painting_the_framing_check_turns_down_is_painted_once_more(self) -> None:
+        beats = [{"text": f"line {n}", "picture": f"brief {n}", "role": "story"} for n in range(1, 7)]
+        paintings = [{3: _painting(3), 5: _painting(5)}, {5: _painting(5) | {"ref": "ai:ak999-05-8"}}]
+        framed = [{3: _painting(3)}, {}]
+        with (patch.object(reel_art, "paint_lines", side_effect=paintings) as paint,
+              patch.object(reel_pictures, "frame_all", side_effect=framed) as frame):
+            self.assertEqual(sorted(reel_pictures.paint_framed("ak999", beats, [3, 5, 6])), [3])
+        self.assertEqual([c.args[2] for c in paint.call_args_list], [[3, 5, 6], [5]])
+        self.assertEqual(sorted(frame.call_args_list[1].args[1]), [5])
+        self.assertIn("letters or script painted on one", frame.call_args.args[4])
 
     def test_paintings_are_credited_on_their_own_line(self) -> None:
         lines = reel_pictures.credit_lines([_museum(1), _painting(2)]).split("\n")
