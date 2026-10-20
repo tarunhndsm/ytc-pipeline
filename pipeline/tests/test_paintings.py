@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -79,6 +80,13 @@ class PaintLinesTests(unittest.TestCase):
             self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [3, 4])), [3])
             self.assertEqual(reel_art.paint_lines("ak999", self.beats, [5]), {})
 
+    def test_a_painting_comes_off_the_neurons_at_what_it_cost(self) -> None:
+        reel_art.paint.side_effect = lambda reel, number, beat: {"ref": f"ai:{reel}-{number:02d}-1", "neurons": 326.4}
+        with patch.dict(os.environ, {"YTC_PAINT_NEURONS": "1000"}):
+            made = reel_art.paint_lines("ak999", self.beats, [1])
+            self.assertAlmostEqual(float(os.environ["YTC_PAINT_NEURONS"]), 1000 - 326.4)
+        self.assertEqual(made, {1: {"ref": "ai:ak999-01-1"}})
+
 
 class PaintTests(unittest.TestCase):
     """One painting: made, hosted, credited as AI, and its neurons counted."""
@@ -131,6 +139,39 @@ class PaintTests(unittest.TestCase):
             with self.assertRaises(reel_art.OutOfNeurons):
                 reel_art._run("@cf/black-forest-labs/flux-2-klein-4b", "a painting", 1)
 
+    def test_a_flagged_painting_is_painted_again_with_another_seed(self) -> None:
+        seeds = []
+
+        def run(model, text, seed):
+            seeds.append(seed)
+            if len(seeds) == 1:
+                raise reel_art.Flagged("HTTP 400: AiError: Your output has been flagged.")
+            return self.jpeg, 131.88
+
+        with patch.object(reel_art, "_run", side_effect=run), patch.object(reel_art.random, "randrange", side_effect=[7, 8]):
+            hit = reel_art.paint("ak999", 3, {"picture": "Rama and Sita in a forest"})
+        self.assertEqual((seeds, hit["artist"], hit["ref"]), ([7, 8], "FLUX.2 klein", "ai:ak999-03-8"))
+
+    def test_schnell_is_asked_without_a_seed(self) -> None:
+        answer = MagicMock(status_code=200, text="", headers={"cf-ai-neurons": "326.4"})
+        answer.json.return_value = {"result": {"image": base64.b64encode(self.jpeg).decode()}}
+        with patch.object(reel_art.requests, "post", return_value=answer) as post:
+            self.assertEqual(reel_art._run("@cf/black-forest-labs/flux-1-schnell", "a painting", 5), (self.jpeg, 326.4))
+        self.assertNotIn("seed", post.call_args.kwargs["json"])
+
+    def test_a_refusal_carries_cloudflare_s_message_and_not_the_url(self) -> None:
+        answer = MagicMock(status_code=400, text='{"errors": []}')
+        answer.json.return_value = {"errors": [{"message": "AiError: Your output has been flagged.", "code": 3030}]}
+        with patch.object(reel_art.requests, "post", return_value=answer):
+            with self.assertRaises(reel_art.Flagged) as flagged:
+                reel_art._run("@cf/black-forest-labs/flux-2-klein-4b", "a painting", 1)
+            answer.json.return_value = {"errors": [{"message": "AiError: Bad input", "code": 5006}]}
+            with self.assertRaises(reel_art.Refused) as refused:
+                reel_art._run("@cf/black-forest-labs/flux-2-klein-4b", "a painting", 1)
+        self.assertEqual(str(flagged.exception), "HTTP 400: AiError: Your output has been flagged.")
+        self.assertNotIsInstance(refused.exception, reel_art.Flagged)
+        self.assertEqual(str(refused.exception), "HTTP 400: AiError: Bad input")
+
     def test_the_figures_a_brief_names_are_painted_as_the_old_paintings_show_them(self) -> None:
         text = reel_art.prompt({"picture": "Pahari painting of Yamaraja bowing deeply before Krishna and Balarama."})
         self.assertTrue(text.startswith("Pahari painting of Yamaraja bowing deeply before Krishna and Balarama. "
@@ -139,7 +180,8 @@ class PaintTests(unittest.TestCase):
         self.assertNotIn("Rama has", reel_art.icons("Scenes from the Ramayana and the life of Parashurama"))
         self.assertEqual(reel_art.icons("Siva and Brahma, Vishnu, Indra"), "Shiva has pale ash-smeared skin, matted "
                          "locks with the crescent moon, a snake at his neck and a trident. Brahma has four bearded "
-                         "heads. Vishnu has blue skin and four arms holding a conch, a discus, a mace and a lotus. ")
+                         "heads. Vishnu has blue skin, yellow robes and four arms holding a conch, a discus, a mace and "
+                         "a lotus. ")
 
     def test_line_1_asks_for_a_close_vivid_figure_and_every_line_for_the_style(self) -> None:
         first, other = (reel_art.prompt({"picture": "Kunti at the river."}, n == 1) for n in (1, 2))

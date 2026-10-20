@@ -60,9 +60,13 @@ ICONS = (
     (r"\b(sage|rishi|muni|ascetic|hermit|yogi|sadhu|maharishi|maharshi)s?\b|\bhermitage\b",
      "sages and ascetics have matted hair, beards, rudraksha beads and plain saffron or bark-cloth garments, never a "
      "crown or jewels"),
-    (r"\bkrishna\b", "Krishna has blue skin, a peacock feather in his crown and a yellow dhoti"),
-    (r"\brama(chandra)?\b", "Rama has blue skin, a crown, a bow and a quiver"),
-    (r"\bvishnu\b|\bnarayana\b", "Vishnu has blue skin and four arms holding a conch, a discus, a mace and a lotus"),
+    # Their clothes are named: a bare blue torso got all four of ak073's paintings of Rama flagged (21 Oct).
+    (r"\bkrishna\b", "Krishna has blue skin, a peacock feather in his crown, a yellow dhoti and a scarf over his "
+                     "shoulders"),
+    (r"\brama(chandra)?\b", "Rama has blue skin, a crown, a yellow dhoti and a long cloth across his chest, a bow and "
+                            "a quiver"),
+    (r"\bvishnu\b|\bnarayana\b", "Vishnu has blue skin, yellow robes and four arms holding a conch, a discus, a mace "
+                                 "and a lotus"),
     (r"\bs(h)?iva\b|\bmahadeva\b", "Shiva has pale ash-smeared skin, matted locks with the crescent moon, a snake at "
                                    "his neck and a trident"),
     (r"\bbalarama\b", "Balarama has fair skin, blue garments and a plough"),
@@ -77,10 +81,21 @@ ICONS = (
     (r"\bnarada\b", "Narada is a sage carrying a veena"),
 )
 MAX_ICONS = 3
+# Cloudflare's safety check flagged all four of ak073's paintings of Rama (21 Oct); a flagged painting is painted
+# again with another seed this many times in all, then by the other model.
+FLAGGED_TRIES = 2
 
 
 class OutOfNeurons(RuntimeError):
     """The Cloudflare account's free neurons for the day are spent (both models draw on them)."""
+
+
+class Refused(requests.RequestException):
+    """Workers AI turned a painting down, with its message and not the URL, which names the account."""
+
+
+class Flagged(Refused):
+    """Cloudflare's safety check flagged the painting that came out (code 3030); another seed can pass it."""
 
 
 def ready() -> bool:
@@ -106,26 +121,46 @@ def _run(model: str, text: str, seed: int) -> tuple[bytes, float]:
         fields = {"prompt": text, "width": WIDTH, "height": HEIGHT, "seed": seed}
         response = requests.post(url, headers=headers, files={k: (None, str(v)) for k, v in fields.items()}, timeout=180)
     else:
-        response = requests.post(url, headers=headers, json={"prompt": text, "steps": 8, "seed": seed}, timeout=180)
+        # schnell takes no seed: "Additional or unevaluated properties '/seed' at '/' not allowed" (21 Oct).
+        response = requests.post(url, headers=headers, json={"prompt": text, "steps": 8}, timeout=180)
     if response.status_code == 429 or (response.status_code >= 400 and "neuron" in response.text.lower()):
         raise OutOfNeurons(response.text[:300])
-    response.raise_for_status()
+    if response.status_code >= 400:
+        try:
+            error = response.json()["errors"][0]
+        except (ValueError, KeyError, IndexError, TypeError):
+            error = {"message": response.text}
+        refused = Flagged if error.get("code") == 3030 else Refused
+        raise refused(f"HTTP {response.status_code}: {str(error.get('message'))[:200]}")
     return base64.b64decode(response.json()["result"]["image"]), float(response.headers.get("cf-ai-neurons") or NEURONS_EACH)
 
 
-def paint(reel: str, number: int, beat: dict) -> dict | None:
-    """A painting for line `number`, hosted, as a hit like the museum searches give; None when no model made one."""
-    text, seed = prompt(beat, number == 1), random.randrange(1 << 31)
-    for model, name in MODELS.items():
+def _paint_with(model: str, name: str, text: str, number: int) -> tuple[Image.Image, int, float] | None:
+    """A painting by `model`, its seed and the neurons it cost, painted again with another seed when flagged."""
+    for _ in range(FLAGGED_TRIES):
+        seed = random.randrange(1 << 31)
         try:
             data, neurons = _run(model, text, seed)
-            image = Image.open(io.BytesIO(data)).convert("RGB")
-            llm.record({"model": f"cloudflare:{model}", "purpose": f"{reel} line {number} painting", "neurons": neurons})
-            break
+            return Image.open(io.BytesIO(data)).convert("RGB"), seed, neurons
         except OutOfNeurons:
             raise
+        except Flagged as err:
+            log.info("line %d: %s's painting was flagged (%s)", number, name, err)
         except (requests.RequestException, KeyError, ValueError, OSError) as err:
             log.info("line %d: %s painted nothing (%s)", number, name, str(err)[:200])
+            return None
+    return None
+
+
+def paint(reel: str, number: int, beat: dict) -> dict | None:
+    """A painting for line `number`, hosted, as a hit like the museum searches give, with the neurons it cost under
+    "neurons" for paint_lines to take off; None when no model made one."""
+    text = prompt(beat, number == 1)
+    for model, name in MODELS.items():
+        if made := _paint_with(model, name, text, number):
+            image, seed, neurons = made
+            llm.record({"model": f"cloudflare:{model}", "purpose": f"{reel} line {number} painting", "neurons": neurons})
+            break
     else:
         return None
     public_id = f"{CLOUDINARY_FOLDER}/{reel}-{number:02d}-{seed}"
@@ -137,7 +172,7 @@ def paint(reel: str, number: int, beat: dict) -> dict | None:
         path.unlink(missing_ok=True)
     return {"ref": f"ai:{reel}-{number:02d}-{seed}", "title": f"AI painting: {beat['picture'][:160]}", "url": url,
             "page": url, "thumb": url, "source": SOURCE, "license": LICENSE, "artist": name, "width": image.width,
-            "height": image.height}
+            "height": image.height, "neurons": neurons}
 
 
 def paint_lines(reel: str, beats: list[dict], numbers: list[int]) -> dict[int, dict]:
@@ -161,6 +196,8 @@ def paint_lines(reel: str, beats: list[dict], numbers: list[int]) -> dict[int, d
 
     with ThreadPoolExecutor(3) as workers:
         made = {number: hit for number, hit in workers.map(one, todo) if hit}
-    os.environ["YTC_PAINT_NEURONS"] = str(max(0.0, left - NEURONS_EACH * len(made)))
+    # schnell costs about 326 a painting, not klein's NEURONS_EACH.
+    spent = sum(hit.pop("neurons", NEURONS_EACH) for hit in made.values())
+    os.environ["YTC_PAINT_NEURONS"] = str(max(0.0, left - spent))
     log.info("painted lines %s of %s", sorted(made), todo)
     return made
