@@ -55,6 +55,21 @@ class FiguresTests(unittest.TestCase):
         self.assertEqual(reel_pictures.figures("रामायण की कथा, आने वाली रात"), set())
 
 
+class OtherFaithTests(unittest.TestCase):
+    """Titles that never reach the models, from ak068's first try (20 Oct)."""
+
+    def test_left_out(self) -> None:
+        for title in ("Painting of the funeral of Maharaja Ranjit Singh, ca.1840.png",
+                      "Four Rajput wives of Ranjit Singh perform sati, detail from a painting of the funeral",
+                      "Abbas II of Persia and the Mughal ambassador.jpeg",
+                      "Basreliëf in de muur aan de oostzijde van de Borobudur Idem 2e gaanderij"):
+            self.assertTrue(reel_pictures.other_faith(title), title)
+
+    def test_kept(self) -> None:
+        for title in (DARBAR, "Maharaja Sawai Madho Singh of Jaipur in durbar", "King Shibi weighs his flesh"):
+            self.assertFalse(reel_pictures.other_faith(title), title)
+
+
 class OtherStoryTests(unittest.TestCase):
     """A picture of another story's people is one whose title names some, and none of this story's."""
 

@@ -68,10 +68,13 @@ FRAMED_KEYS = ("size", "subject", "faces", "kind", "hindi")
 # such pictures, yet on 13 Oct they chose a Jain teacher for Ajamila, and a Kalpa-sutra page, Buddhist deities and
 # Murad Bakhsh's portrait for Astika. A Mughal court goes by its names, since a "Sub-Imperial Mughal" Ramayana folio
 # is the epic; the Razmnama carries Persian script. "Saint" stays allowed: museums title rishis and yogis that way too.
+# A Sikh court goes by its names as well: on 20 Oct crops of Ranjit Singh's funeral took every framing round of two
+# ak068 lines. Commons files carry no culture, so Persia and Borobudur go by their titles too (ak068: "Abbas II of
+# Persia and the Mughal ambassador", a Borobudur relief).
 OTHER_FAITH = re.compile(r"\b(jaina?|jina|mahavira|tirthankara|kalpa[- ]?sutra|parsh?vanatha|buddh\w*|bodhisattva|"
                          r"avalokiteshvara|manjushri|lama|tibet\w*|shah|jahangir|akbar\w*|aurangzeb|babur\w*|murad|"
                          r"razm\w*|hamza\w*|sultan|nawab|mirza|begum|sufi|dervish|qur'?an|koran|sikh|nanak|christ|"
-                         r"jesus|madonna)\b", re.I)
+                         r"jesus|madonna|ranjit singh|persia\w*|safavid|borobudur)\b", re.I)
 # A book of Hindu myths, with Indian artists' paintings of the epics, whose title names the Buddhists too.
 NOT_OTHER_FAITH = re.compile(r"myths of the hindus (&|and) buddhists", re.I)
 # Cleveland and the Met say where an object was made ("Northern India, Pahari kingdoms", "China, Ming dynasty"), and
