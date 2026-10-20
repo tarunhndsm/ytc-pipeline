@@ -46,14 +46,17 @@ LICENSE = "AI-generated"
 CLOUDINARY_FOLDER = "ankahikathayein/art"
 STYLE = ("Indian miniature painting in the 18th-century Pahari style: opaque watercolour on paper, fine brushwork, "
          "flat perspective, rich natural pigments, every figure fully clothed in traditional Indian dress, Hindu "
-         "iconography as in the old paintings. Sages and ascetics have matted hair, beards, rudraksha beads and plain "
-         "saffron or bark-cloth garments, never a crown or jewels. One clear scene filling a tall vertical picture; "
-         "no text, letters, border or frame.")
+         "iconography as in the old paintings. Only the figures the brief names, each large and clear. One clear "
+         "scene filling a tall vertical picture; no text, letters, border or frame.")
 # Line 1's picture is the Reel's first frame in the feed (reel_pictures.CHOOSE_PROMPT).
 FIRST = "The figure large and close, vivid and colourful, clear at phone size. "
 # How the old paintings show the figures a brief names, at most MAX_ICONS of them: the briefs give only the name, and
-# FLUX painted Krishna pale and Yama as a sage (ak072, 20 Oct).
+# FLUX painted Krishna pale and Yama as a sage (ak072, 20 Oct). Only for a brief that names them: said of every line,
+# the sages filled every painting with a crowd of them (ak065).
 ICONS = (
+    (r"\b(sage|rishi|muni|ascetic|hermit|yogi|sadhu|maharishi|maharshi)s?\b|\bhermitage\b",
+     "sages and ascetics have matted hair, beards, rudraksha beads and plain saffron or bark-cloth garments, never a "
+     "crown or jewels"),
     (r"\bkrishna\b", "Krishna has blue skin, a peacock feather in his crown and a yellow dhoti"),
     (r"\brama(chandra)?\b", "Rama has blue skin, a crown, a bow and a quiver"),
     (r"\bvishnu\b|\bnarayana\b", "Vishnu has blue skin and four arms holding a conch, a discus, a mace and a lotus"),

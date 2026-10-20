@@ -139,7 +139,8 @@ class PaintTests(unittest.TestCase):
         first, other = (reel_art.prompt({"picture": "Kunti at the river."}, n == 1) for n in (1, 2))
         self.assertTrue(first.startswith("Kunti at the river. The figure large and close"))
         self.assertTrue(other.startswith("Kunti at the river. Indian miniature painting"))
-        self.assertIn("never a crown", other)
+        self.assertNotIn("Sages", other)
+        self.assertIn("never a crown", reel_art.prompt({"picture": "Sage Durvasa blesses young Kunti"}))
 
 
 class PictureStepTests(unittest.TestCase):
