@@ -1,7 +1,7 @@
 """YouTube Data and Analytics API access through the owner's own Google Cloud app: analytics and playlists.
 
-Uploads don't go through here: videos uploaded by an unaudited app are locked private, so publishing
-uses Buffer instead (see publish.py).
+Days of Odd's uploads don't go through here: publishing uses Buffer (see publish.py). The news desk uploads through
+its own project (news/publish.py); since October 2026 uploads from an unaudited project may be public.
 """
 
 from __future__ import annotations
