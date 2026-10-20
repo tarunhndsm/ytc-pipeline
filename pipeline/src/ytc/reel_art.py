@@ -3,9 +3,9 @@ switch to another). Judges failed Reels for the right figures in other episodes 
 score 8 or more), and a line with no picture at all made the picture step give up on the story.
 
 Each painting comes from the line's own brief (reel_writer's "picture"), in the style of the Pahari miniatures most
-lines show, from FLUX.2 [klein] 4B on Workers AI, else FLUX.1 [schnell] there (both Apache-2.0), on the owner's one
-Cloudflare account: 10,000 neurons a day, renewed at 00:00 UTC and shared with the news desk; a painting costs about
-132. It is hosted on Cloudinary like the Reels' videos, so every render, QA swap and rescue fetches it like a museum
+lines show, from FLUX.2 [klein] 4B on Workers AI (Apache-2.0), on the owner's one Cloudflare account: 10,000 neurons
+a day, renewed at 00:00 UTC and shared with the news desk; a painting costs about 132, a flagged one too. It is
+hosted on Cloudinary like the Reels' videos, so every render, QA swap and rescue fetches it like a museum
 picture, and it goes through the same framing check. Its credit says it was made with AI; the Reels already carry
 the platforms' AI label (synthetic_media).
 """
@@ -30,7 +30,8 @@ from . import llm, publish
 log = logging.getLogger(__name__)
 
 WIDTH, HEIGHT = 864, 1536
-MODELS = {"@cf/black-forest-labs/flux-2-klein-4b": "FLUX.2 klein", "@cf/black-forest-labs/flux-1-schnell": "FLUX.1 schnell"}
+# Not FLUX.1 [schnell]: it paints only 1,024 squares, which the picture step turns down (reel_pictures.MIN_HEIGHT).
+MODELS = {"@cf/black-forest-labs/flux-2-klein-4b": "FLUX.2 klein"}
 # Paintings a picture try may make; a Reel has 12 to 15 lines.
 MAX_PAINTED = 8
 # Ankahi's share of the account's 10,000 free neurons a day (UTC); the rest stays for the news desk's text fallback.
@@ -82,16 +83,21 @@ ICONS = (
 )
 MAX_ICONS = 3
 # Cloudflare's safety check flagged all four of ak073's paintings of Rama (21 Oct); a flagged painting is painted
-# again with another seed this many times in all, then by the other model.
+# again with another seed, up to this many tries in all.
 FLAGGED_TRIES = 2
 
 
 class OutOfNeurons(RuntimeError):
-    """The Cloudflare account's free neurons for the day are spent (both models draw on them)."""
+    """The Cloudflare account's free neurons for the day are spent."""
 
 
 class Refused(requests.RequestException):
-    """Workers AI turned a painting down, with its message and not the URL, which names the account."""
+    """Workers AI turned a painting down, with its message and not the URL, which names the account, and the neurons
+    it charged for the call."""
+
+    def __init__(self, message: str, neurons: float = 0.0) -> None:
+        super().__init__(message)
+        self.neurons = neurons
 
 
 class Flagged(Refused):
@@ -117,12 +123,8 @@ def _run(model: str, text: str, seed: int) -> tuple[bytes, float]:
     """The picture and the neurons it cost."""
     url = f"https://api.cloudflare.com/client/v4/accounts/{os.environ['IG_CLOUDFLARE_ACCOUNT_ID']}/ai/run/{model}"
     headers = {"Authorization": f"Bearer {os.environ['IG_CLOUDFLARE_API_TOKEN']}"}
-    if "klein" in model:
-        fields = {"prompt": text, "width": WIDTH, "height": HEIGHT, "seed": seed}
-        response = requests.post(url, headers=headers, files={k: (None, str(v)) for k, v in fields.items()}, timeout=180)
-    else:
-        # schnell takes no seed: "Additional or unevaluated properties '/seed' at '/' not allowed" (21 Oct).
-        response = requests.post(url, headers=headers, json={"prompt": text, "steps": 8}, timeout=180)
+    fields = {"prompt": text, "width": WIDTH, "height": HEIGHT, "seed": seed}
+    response = requests.post(url, headers=headers, files={k: (None, str(v)) for k, v in fields.items()}, timeout=180)
     if response.status_code == 429 or (response.status_code >= 400 and "neuron" in response.text.lower()):
         raise OutOfNeurons(response.text[:300])
     if response.status_code >= 400:
@@ -131,38 +133,46 @@ def _run(model: str, text: str, seed: int) -> tuple[bytes, float]:
         except (ValueError, KeyError, IndexError, TypeError):
             error = {"message": response.text}
         refused = Flagged if error.get("code") == 3030 else Refused
-        raise refused(f"HTTP {response.status_code}: {str(error.get('message'))[:200]}")
+        # A flagged painting was made, and charged: on 20 Oct the account ran out with 6,373 neurons counted.
+        charged = response.headers.get("cf-ai-neurons") or (NEURONS_EACH if refused is Flagged else 0)
+        raise refused(f"HTTP {response.status_code}: {str(error.get('message'))[:200]}", float(charged))
     return base64.b64decode(response.json()["result"]["image"]), float(response.headers.get("cf-ai-neurons") or NEURONS_EACH)
 
 
-def _paint_with(model: str, name: str, text: str, number: int) -> tuple[Image.Image, int, float] | None:
-    """A painting by `model`, its seed and the neurons it cost, painted again with another seed when flagged."""
+def _paint_with(model: str, name: str, text: str, number: int) -> tuple[Image.Image | None, int, float]:
+    """A painting by `model` (None when it made none), its seed, and the neurons spent on it, flagged tries included;
+    a flagged painting is painted again with another seed."""
+    spent = 0.0
     for _ in range(FLAGGED_TRIES):
         seed = random.randrange(1 << 31)
         try:
             data, neurons = _run(model, text, seed)
-            return Image.open(io.BytesIO(data)).convert("RGB"), seed, neurons
+            return Image.open(io.BytesIO(data)).convert("RGB"), seed, spent + neurons
         except OutOfNeurons:
             raise
         except Flagged as err:
+            spent += err.neurons
             log.info("line %d: %s's painting was flagged (%s)", number, name, err)
         except (requests.RequestException, KeyError, ValueError, OSError) as err:
+            spent += getattr(err, "neurons", 0.0)
             log.info("line %d: %s painted nothing (%s)", number, name, str(err)[:200])
-            return None
-    return None
+            break
+    return None, 0, spent
 
 
-def paint(reel: str, number: int, beat: dict) -> dict | None:
-    """A painting for line `number`, hosted, as a hit like the museum searches give, with the neurons it cost under
-    "neurons" for paint_lines to take off; None when no model made one."""
-    text = prompt(beat, number == 1)
+def paint(reel: str, number: int, beat: dict) -> tuple[dict | None, float]:
+    """A painting for line `number`, hosted, as a hit like the museum searches give (None when no model made one),
+    and the neurons spent on the line, flagged paintings included."""
+    text, spent = prompt(beat, number == 1), 0.0
     for model, name in MODELS.items():
-        if made := _paint_with(model, name, text, number):
-            image, seed, neurons = made
+        image, seed, neurons = _paint_with(model, name, text, number)
+        if neurons:
             llm.record({"model": f"cloudflare:{model}", "purpose": f"{reel} line {number} painting", "neurons": neurons})
+        spent += neurons
+        if image:
             break
     else:
-        return None
+        return None, spent
     public_id = f"{CLOUDINARY_FOLDER}/{reel}-{number:02d}-{seed}"
     path = Path(tempfile.gettempdir()) / f"{reel}-{number:02d}-{seed}.jpg"
     image.save(path, "JPEG", quality=92)
@@ -172,7 +182,7 @@ def paint(reel: str, number: int, beat: dict) -> dict | None:
         path.unlink(missing_ok=True)
     return {"ref": f"ai:{reel}-{number:02d}-{seed}", "title": f"AI painting: {beat['picture'][:160]}", "url": url,
             "page": url, "thumb": url, "source": SOURCE, "license": LICENSE, "artist": name, "width": image.width,
-            "height": image.height, "neurons": neurons}
+            "height": image.height}, spent
 
 
 def paint_lines(reel: str, beats: list[dict], numbers: list[int]) -> dict[int, dict]:
@@ -185,19 +195,18 @@ def paint_lines(reel: str, beats: list[dict], numbers: list[int]) -> dict[int, d
         log.info("no painting for lines %s: today's %d neurons are spent", numbers, DAILY_NEURONS)
         return {}
 
-    def one(number: int) -> tuple[int, dict | None]:
+    def one(number: int) -> tuple[int, dict | None, float]:
         try:
-            return number, paint(reel, number, beats[number - 1])
+            return number, *paint(reel, number, beats[number - 1])
         except OutOfNeurons as err:
             log.warning("line %d: Cloudflare's free neurons for today are spent (%s)", number, str(err)[:160])
         except Exception as err:
             log.warning("line %d: no painting (%s: %s)", number, type(err).__name__, str(err)[:200])
-        return number, None
+        return number, None, 0.0
 
     with ThreadPoolExecutor(3) as workers:
-        made = {number: hit for number, hit in workers.map(one, todo) if hit}
-    # schnell costs about 326 a painting, not klein's NEURONS_EACH.
-    spent = sum(hit.pop("neurons", NEURONS_EACH) for hit in made.values())
-    os.environ["YTC_PAINT_NEURONS"] = str(max(0.0, left - spent))
+        done = list(workers.map(one, todo))
+    made = {number: hit for number, hit, _ in done if hit}
+    os.environ["YTC_PAINT_NEURONS"] = str(max(0.0, left - sum(spent for _, _, spent in done)))
     log.info("painted lines %s of %s", sorted(made), todo)
     return made

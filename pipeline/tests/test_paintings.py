@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import io
 import json
 import os
@@ -50,7 +49,7 @@ class PaintLinesTests(unittest.TestCase):
     def _paint(self, reel, number, beat):
         if number in self.out:
             raise reel_art.OutOfNeurons("daily free allocation exceeded")
-        return {"ref": f"ai:{reel}-{number:02d}-1"}
+        return {"ref": f"ai:{reel}-{number:02d}-1"}, reel_art.NEURONS_EACH
 
     def test_nothing_is_painted_without_the_cloudflare_keys(self) -> None:
         with patch.dict(os.environ, {"IG_CLOUDFLARE_API_TOKEN": ""}):
@@ -80,12 +79,13 @@ class PaintLinesTests(unittest.TestCase):
             self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [3, 4])), [3])
             self.assertEqual(reel_art.paint_lines("ak999", self.beats, [5]), {})
 
-    def test_a_painting_comes_off_the_neurons_at_what_it_cost(self) -> None:
-        reel_art.paint.side_effect = lambda reel, number, beat: {"ref": f"ai:{reel}-{number:02d}-1", "neurons": 326.4}
+    def test_flagged_paintings_come_off_the_neurons_too(self) -> None:
+        costs = {1: (None, 264.0), 2: ({"ref": "ai:ak999-02-1"}, 263.76)}
+        reel_art.paint.side_effect = lambda reel, number, beat: costs[number]
         with patch.dict(os.environ, {"YTC_PAINT_NEURONS": "1000"}):
-            made = reel_art.paint_lines("ak999", self.beats, [1])
-            self.assertAlmostEqual(float(os.environ["YTC_PAINT_NEURONS"]), 1000 - 326.4)
-        self.assertEqual(made, {1: {"ref": "ai:ak999-01-1"}})
+            made = reel_art.paint_lines("ak999", self.beats, [1, 2])
+            self.assertAlmostEqual(float(os.environ["YTC_PAINT_NEURONS"]), 1000 - 264.0 - 263.76)
+        self.assertEqual(made, {2: {"ref": "ai:ak999-02-1"}})
 
 
 class PaintTests(unittest.TestCase):
@@ -113,7 +113,8 @@ class PaintTests(unittest.TestCase):
 
     def test_a_painting_is_hosted_and_credited_as_made_with_ai(self) -> None:
         with patch.object(reel_art, "_run", return_value=(self.jpeg, 131.88)):
-            hit = reel_art.paint("ak999", 3, {"picture": "Sage Durvasa blesses young Kunti"})
+            hit, spent = reel_art.paint("ak999", 3, {"picture": "Sage Durvasa blesses young Kunti"})
+        self.assertEqual(spent, 131.88)
         self.assertFalse(self.hosted[0].exists(), "the painting's local copy was left behind")
         self.assertTrue(hit["ref"].startswith("ai:ak999-03-"))
         self.assertEqual((hit["source"], hit["license"], hit["artist"]), ("AI", "AI-generated", "FLUX.2 klein"))
@@ -121,18 +122,14 @@ class PaintTests(unittest.TestCase):
         self.assertIn(f"{reel_art.CLOUDINARY_FOLDER}/ak999-03-", hit["url"])
         self.assertEqual(json.loads(self.usage.read_text(encoding="utf-8"))["neurons"], 131.88)
 
-    def test_flux_1_schnell_paints_when_flux_2_klein_fails(self) -> None:
-        def run(model, text, seed):
-            if "klein" in model:
-                raise requests.HTTPError("500 Server Error")
-            return self.jpeg, 40.0
+    def test_a_painting_turned_down_for_anything_but_a_flag_is_not_painted_again(self) -> None:
+        with patch.object(reel_art, "_run", side_effect=reel_art.Refused("HTTP 400: AiError: Bad input")) as run:
+            self.assertEqual(reel_art.paint("ak999", 3, {"picture": "Kunti at the river"}), (None, 0.0))
+        self.assertEqual(run.call_count, 1)
 
-        with patch.object(reel_art, "_run", side_effect=run):
-            self.assertEqual(reel_art.paint("ak999", 3, {"picture": "Kunti at the river"})["artist"], "FLUX.1 schnell")
-
-    def test_no_painting_when_both_models_fail(self) -> None:
+    def test_no_painting_when_cloudflare_is_down(self) -> None:
         with patch.object(reel_art, "_run", side_effect=requests.ConnectionError("down")):
-            self.assertIsNone(reel_art.paint("ak999", 3, {"picture": "Kunti at the river"}))
+            self.assertEqual(reel_art.paint("ak999", 3, {"picture": "Kunti at the river"}), (None, 0.0))
 
     def test_cloudflare_refusing_for_the_days_neurons_raises(self) -> None:
         with patch.object(reel_art.requests, "post", return_value=MagicMock(status_code=429, text="Too Many Requests")):
@@ -145,22 +142,36 @@ class PaintTests(unittest.TestCase):
         def run(model, text, seed):
             seeds.append(seed)
             if len(seeds) == 1:
-                raise reel_art.Flagged("HTTP 400: AiError: Your output has been flagged.")
+                raise reel_art.Flagged("HTTP 400: AiError: Your output has been flagged.", 131.88)
             return self.jpeg, 131.88
 
         with patch.object(reel_art, "_run", side_effect=run), patch.object(reel_art.random, "randrange", side_effect=[7, 8]):
-            hit = reel_art.paint("ak999", 3, {"picture": "Rama and Sita in a forest"})
+            hit, spent = reel_art.paint("ak999", 3, {"picture": "Rama and Sita in a forest"})
         self.assertEqual((seeds, hit["artist"], hit["ref"]), ([7, 8], "FLUX.2 klein", "ai:ak999-03-8"))
+        self.assertAlmostEqual(spent, 263.76)
+        self.assertAlmostEqual(json.loads(self.usage.read_text(encoding="utf-8"))["neurons"], 263.76)
 
-    def test_schnell_is_asked_without_a_seed(self) -> None:
-        answer = MagicMock(status_code=200, text="", headers={"cf-ai-neurons": "326.4"})
-        answer.json.return_value = {"result": {"image": base64.b64encode(self.jpeg).decode()}}
-        with patch.object(reel_art.requests, "post", return_value=answer) as post:
-            self.assertEqual(reel_art._run("@cf/black-forest-labs/flux-1-schnell", "a painting", 5), (self.jpeg, 326.4))
-        self.assertNotIn("seed", post.call_args.kwargs["json"])
+    def test_a_line_flagged_every_try_still_counts_its_neurons(self) -> None:
+        flagged = reel_art.Flagged("HTTP 400: AiError: Your output has been flagged.", 131.88)
+        with patch.object(reel_art, "_run", side_effect=flagged) as run:
+            hit, spent = reel_art.paint("ak999", 3, {"picture": "Rama holding his bow"})
+        self.assertEqual((hit, run.call_count), (None, reel_art.FLAGGED_TRIES))
+        self.assertAlmostEqual(spent, reel_art.FLAGGED_TRIES * 131.88)
+        self.assertAlmostEqual(json.loads(self.usage.read_text(encoding="utf-8"))["neurons"], spent)
+
+    def test_a_flagged_painting_is_charged_what_cloudflare_says_else_a_painting(self) -> None:
+        answer = MagicMock(status_code=400, text='{"errors": []}', headers={})
+        answer.json.return_value = {"errors": [{"message": "AiError: Your output has been flagged.", "code": 3030}]}
+        with patch.object(reel_art.requests, "post", return_value=answer):
+            with self.assertRaises(reel_art.Flagged) as guessed:
+                reel_art._run("@cf/black-forest-labs/flux-2-klein-4b", "a painting", 1)
+            answer.headers = {"cf-ai-neurons": "120.5"}
+            with self.assertRaises(reel_art.Flagged) as told:
+                reel_art._run("@cf/black-forest-labs/flux-2-klein-4b", "a painting", 1)
+        self.assertEqual((guessed.exception.neurons, told.exception.neurons), (reel_art.NEURONS_EACH, 120.5))
 
     def test_a_refusal_carries_cloudflare_s_message_and_not_the_url(self) -> None:
-        answer = MagicMock(status_code=400, text='{"errors": []}')
+        answer = MagicMock(status_code=400, text='{"errors": []}', headers={})
         answer.json.return_value = {"errors": [{"message": "AiError: Your output has been flagged.", "code": 3030}]}
         with patch.object(reel_art.requests, "post", return_value=answer):
             with self.assertRaises(reel_art.Flagged) as flagged:
@@ -170,7 +181,7 @@ class PaintTests(unittest.TestCase):
                 reel_art._run("@cf/black-forest-labs/flux-2-klein-4b", "a painting", 1)
         self.assertEqual(str(flagged.exception), "HTTP 400: AiError: Your output has been flagged.")
         self.assertNotIsInstance(refused.exception, reel_art.Flagged)
-        self.assertEqual(str(refused.exception), "HTTP 400: AiError: Bad input")
+        self.assertEqual((str(refused.exception), refused.exception.neurons), ("HTTP 400: AiError: Bad input", 0.0))
 
     def test_the_figures_a_brief_names_are_painted_as_the_old_paintings_show_them(self) -> None:
         text = reel_art.prompt({"picture": "Pahari painting of Yamaraja bowing deeply before Krishna and Balarama."})
