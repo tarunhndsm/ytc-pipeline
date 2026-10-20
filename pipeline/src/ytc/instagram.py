@@ -24,7 +24,9 @@ log = logging.getLogger(__name__)
 
 # Instagram cuts a caption at 2,200 characters and, since December 2025, takes at most 5 hashtags a post (the
 # Graph API reference still says 30); it shows about 125 characters before "more", so the caption opens on the title.
-CAPTION_CHARS, MAX_HASHTAGS = 2200, 5
+# Buffer turns down more than 2,196 ("Instagram posts cannot exceed 2196 characters", ak072 on 20 Oct), counted, it
+# is taken here, as JavaScript counts: an emoji is two.
+CAPTION_CHARS, MAX_HASHTAGS = 2196, 5
 FOLLOW_LINE = "ऐसी ही अनकही कथाओं के लिए फ़ॉलो करें 🙏"
 SUBSCRIBE_LINES = ("ऐसी ही अनकही कथाओं के लिए चैनल Subscribe करें 🙏", "Instagram: @ankahi.kathayein")
 # The quiz from Reel to Reel (reel_writer): the question opens the caption, where the feed shows it before "more".
@@ -134,12 +136,38 @@ def quiz_parts(spec: ShortSpec, following: str = "अगली रील", chann
     return asked, answered, follow
 
 
+def _units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _cut(text: str, units: int) -> str:
+    """`text` cut to at most `units` UTF-16 units."""
+    kept, used = [], 0
+    for char in text:
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > units:
+            break
+        kept.append(char)
+    return "".join(kept)
+
+
 def caption(spec: ShortSpec, channel: str = "instagram") -> str:
+    """The post's text, within CAPTION_CHARS: a story too long for it ends at an earlier sentence, so the picture
+    credits, the follow line and the hashtags after it stay."""
     tags = " ".join(spec.hashtags[:MAX_HASHTAGS])
     asked, answered, follow = quiz_parts(spec, channel=channel)
-    body = "\n\n".join(part for part in (spec.title, asked, (spec.description or "").strip(), answered, follow, tags)
-                       if part)
-    return body[:CAPTION_CHARS]
+    story, _, rest = (spec.description or "").strip().partition("\n")
+
+    def text(story: str) -> str:
+        description = "\n".join(part for part in (story, rest) if part)
+        return "\n\n".join(part for part in (spec.title, asked, description, answered, follow, tags) if part)
+
+    body = text(story)
+    if (over := _units(body) - CAPTION_CHARS) > 0:
+        cut = story[:max(len(story) - over - 1, 0)]
+        story = cut[:cut.rfind("।") + 1] if "।" in cut else cut.rstrip() + "…" if cut else ""
+        body = text(story)
+    return _cut(body, CAPTION_CHARS)
 
 
 def youtube_text(spec: ShortSpec) -> str:

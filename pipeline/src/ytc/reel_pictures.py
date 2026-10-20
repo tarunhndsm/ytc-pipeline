@@ -65,6 +65,8 @@ AVOID = "work/avoid.json"
 KEPT = "work/kept.json"
 # The caption's credit line for the paintings made with AI (reel_art).
 MADE_CREDIT = "AI से बने चित्र: "
+# How reel_writer's description ends, before the credits.
+SOURCES = "स्रोत: "
 HIT_KEYS = ("ref", "title", "date", "url", "page", "thumb", "source", "license", "artist", "width", "height")
 FRAMED_KEYS = ("size", "subject", "faces", "kind", "hindi")
 # A title naming another faith's figures or books, or a Mughal court, never reaches the models: both prompts forbid
@@ -735,7 +737,8 @@ def credit_lines(hits: list[dict]) -> str:
         lines.append("फ़ोटो: " + "; ".join(photos))
     if made:
         lines.append(MADE_CREDIT + "; ".join(h["hindi"] for h in made))
-    return "\n".join(lines)
+    # A Commons artist can hold line breaks ("Udaipur Style\n\nRajasthan School"), which broke ak072's credit in two.
+    return "\n".join(" ".join(line.split()) for line in lines)
 
 
 def _visual(hit: dict, crop: list[float], number: int) -> dict:
@@ -834,8 +837,13 @@ def spares_for(number: int, hits: list[dict], in_use: set[str]) -> list[dict]:
 
 
 def with_credits(description: str, hits: list[dict]) -> str:
-    """The description with its last lines, the picture credits, made for `hits`."""
-    kept = [line for line in description.rstrip("\n").split("\n") if not line.startswith(("चित्र: ", "फ़ोटो: ", MADE_CREDIT))]
+    """The description with its last lines, the picture credits, made for `hits`. Everything after the writer's
+    sources line is credits: a credit broken over lines left its other half there each time the credits were made
+    again (three in ak072, 1,043 characters)."""
+    lines = description.rstrip("\n").split("\n")
+    if sources := [i for i, line in enumerate(lines) if line.startswith(SOURCES)]:
+        lines = lines[:sources[-1] + 1]
+    kept = [line for line in lines if not line.startswith(("चित्र: ", "फ़ोटो: ", MADE_CREDIT))]
     return "\n".join(kept) + "\n" + credit_lines(hits)
 
 
