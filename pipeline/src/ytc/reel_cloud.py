@@ -70,24 +70,30 @@ RUN_MINUTES = 45
 KEEP = timedelta(days=2)
 
 IST = ZoneInfo("Asia/Kolkata")
-SLOTS = ((7, 30), (13, 0), (20, 0))
+# Three to four Reels a day on every channel (owner, 20 Oct).
+SLOTS = ((7, 30), (13, 0), (17, 0), (20, 0))
 # YouTube's own times: India watches Shorts most from 19:00 to 22:00 IST. On 1 Oct the channel's Short at 20:00 had
 # 1,213 views against 42 at 07:30 and 1 at 13:00, while Instagram's 07:30 slot drew 65.5k plays for ak002.
-YOUTUBE_SLOTS = ((18, 30), (20, 0), (21, 30))
-# A day's first Reel goes out in the evening, then at noon, then in the morning; a day's first Short at 20:00.
-EVENING_FIRST = sorted(SLOTS, reverse=True)
-YOUTUBE_FIRST = ((20, 0), (18, 30), (21, 30))
-# One Short a day at most (owner, 18 Oct), at DAILY_SHORT: of the Reels out on Instagram between PICK_AFTER and
-# PICK_DAYS ago, the one with the highest index there (growth.analyze: its reach over what a post of its age gets),
-# if it is in the better half of them. With every Reel a Short, up to three a day, the channel's fifteen newest drew
-# a median of about a dozen views, and YouTube shows less of a channel whose Shorts its viewers skip. The day's Short
-# is picked from PICK_AHEAD before its slot, from the growth desk's freshest numbers (it reads them every 6 hours).
+YOUTUBE_SLOTS = ((17, 0), (18, 30), (20, 0), (21, 30))
+# A day's first Reel goes out in the evening, then at noon, then in the morning, and a fourth in the afternoon; a
+# day's first Short at 20:00, its fourth at 17:00.
+EVENING_FIRST = ((20, 0), (13, 0), (7, 30), (17, 0))
+YOUTUBE_FIRST = ((20, 0), (18, 30), (21, 30), (17, 0))
+# Every Reel goes to YouTube as well (owner, 20 Oct: 3 to 4 Reels a day on Instagram, YouTube and Facebook), at the
+# slot youtube_slot finds. Off, one Short a day at most (owner, 18 Oct), at DAILY_SHORT: of the Reels out on
+# Instagram between PICK_AFTER and PICK_DAYS ago, the one with the highest index there (growth.analyze: its reach over
+# what a post of its age gets), if it is in the better half of them. With every Reel a Short, up to three a day, the
+# channel's fifteen newest drew a median of about a dozen views, and YouTube shows less of a channel whose Shorts its
+# viewers skip. The day's Short is picked from PICK_AHEAD before its slot, from the growth desk's freshest numbers.
+EVERY_SHORT = True
 DAILY_SHORT = (20, 0)
 PICK_AFTER, PICK_DAYS, PICK_AHEAD = timedelta(hours=24), timedelta(days=7), timedelta(hours=12)
 # Every day up to COVER_DAYS ahead (today is the first) gets a post before any day gets a second, and only days up
-# to FULL_DAYS ahead get a second or third: a day with nothing costs a channel more than a day with one fewer, and
-# posts spread ahead keep the days covered while the studio stalls. Up to 3 + 3 + 2 + 2 Reels wait, QUEUE of them.
+# to FULL_DAYS ahead get a second, third or fourth: a day with nothing costs a channel more than a day with one
+# fewer, and posts spread ahead keep the days covered while the studio stalls. QUEUE of them wait.
 COVER_DAYS, FULL_DAYS = 4, 4
+# How many Reels a day may have: each round of FILL fills every day up to its days ahead to one more.
+FILL = ((0, COVER_DAYS), (1, FULL_DAYS), (2, FULL_DAYS), (3, FULL_DAYS))
 # The owner hears of a day without a post coming only from this hour (IST), not at night.
 ALERT_FROM = 12
 # Buffer's free plan holds 10 scheduled posts a channel, and the owner wants all 10 kept full (1 Oct).
@@ -282,9 +288,44 @@ def pick_short(now: datetime) -> tuple[Path | None, str]:
     return best, f"index {recent[best]} on Instagram (the week's median is {middle:.2f})"
 
 
+def youtube_slot(due: datetime, now: datetime, planned: list[datetime], after: datetime | None = None) -> datetime:
+    """A Reel's Short slot (EVERY_SHORT): the Reel's own day on Instagram while it is still to go out there, else the
+    day up to COVER_DAYS ahead with the fewest Shorts, at YouTube's times. A Reel that answers another's question goes
+    out after `after`, that one's Short."""
+    taken = {_minute(when) for when in _dues(youtube=True) + planned}
+    if after is not None:
+        first = max(due, now + LEAD, after).astimezone(IST).date()
+        for day in (first + timedelta(days=n) for n in range(14)):
+            for hour, mins in sorted(YOUTUBE_SLOTS):
+                slot = datetime(day.year, day.month, day.day, hour, mins, tzinfo=IST)
+                if slot > after and slot > now + LEAD and slot not in taken:
+                    return slot
+        raise RuntimeError(f"YouTube has no free slot in the two weeks from {first:%d %b}")
+    if due > now + LEAD:
+        first = due.astimezone(IST).date()
+        days = [first + timedelta(days=n) for n in range(14)]
+    else:
+        per_day = Counter(when.date() for when in taken)
+        soon = _ahead(now, COVER_DAYS)
+        days = sorted(soon, key=lambda d: per_day[d]) + [soon[-1] + timedelta(days=n) for n in range(1, 14)]
+    for day in days:
+        if slot := _open(day, YOUTUBE_FIRST, taken, now):
+            return slot
+    raise RuntimeError(f"YouTube has no free slot in the two weeks from {days[0]:%d %b}")
+
+
+def _hosted(folder: Path, now: datetime) -> bool:
+    """Whether the Reel's video is still on Cloudinary for its Short to use: unhost_sent takes one without a Short off
+    once Instagram had it PICK_DAYS ago."""
+    from . import instagram, reels
+
+    record = reels._read(folder / instagram.RECORD) or {}
+    return not record.get("unhosted_at") and (due := _due(folder)) is not None and due > now - PICK_DAYS
+
+
 def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
-    """Schedule the brand's YouTube Shorts: each Reel pinned to a slot (PINS), and one a day at most, the one
-    pick_short finds; the slots it took."""
+    """Schedule the brand's YouTube Shorts: each Reel pinned to a slot (PINS), then with EVERY_SHORT every other Reel
+    still hosted, else one a day at most, the one pick_short finds; the slots it took."""
     from . import instagram, publish, reels
 
     planned: list[datetime] = []
@@ -297,7 +338,7 @@ def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
         done["errors"].append(f"couldn't read Buffer's YouTube posts, so none were made: {err}"[:300])
         return planned
     pins = _pins(now)
-    booking: list[tuple[Path, datetime, str]] = []
+    booking: list[tuple[Path, datetime | None, str]] = []
     for folder in sorted(waiting):
         withdrawn = (folder / instagram.YOUTUBE_RECORD).exists()
         # Buffer keeps a withdrawn Short's post as sent: only its cut's post is that Reel's Short now.
@@ -308,29 +349,41 @@ def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
             done["mirrored"][folder.name] = f"{_ist(post['dueAt'])} (already in Buffer)"
         elif folder.name in pins:
             booking.append((folder, pins[folder.name], "where it is pinned"))
+        elif EVERY_SHORT and _hosted(folder, now):
+            booking.append((folder, None, "as every Reel"))
     today = now.astimezone(IST).date()
     slot = datetime(today.year, today.month, today.day, *DAILY_SHORT, tzinfo=IST)
-    days = {_minute(when).date() for when in _dues(youtube=True)} | {when.date() for _, when, _ in booking}
-    if now + LEAD < slot <= now + PICK_AHEAD and today not in days:
+    days = {_minute(when).date() for when in _dues(youtube=True)} | {when.date() for _, when, _ in booking if when}
+    if not EVERY_SHORT and now + LEAD < slot <= now + PICK_AHEAD and today not in days:
         picked, why = pick_short(now)
         if picked is None:
             done["held"]["YouTube"] = f"no Short today: {why}"
         else:
             booking.append((picked, slot, why))
+    # Pinned Shorts first, then the Reels still to go out on Instagram, which keep their day, then the ones out there.
+    booking.sort(key=lambda b: (b[1] is None, _due(b[0]) <= now + LEAD, _due(b[0])))
+    mirrored: dict[str, datetime] = {}
     for folder, slot, why in booking:
         reel = folder.name
         if len({d for d in _dues(youtube=True) if d > now} | set(planned)) >= QUEUE:
             done["held"][f"{reel} (YouTube)"] = "waiting for room in the YouTube queue"
             continue
-        after, waits = _youtube_after(folder, {})
-        if waits or (after and after >= slot):
+        after, waits = _youtube_after(folder, mirrored)
+        if waits or (slot and after and after >= slot):
             done["held"][f"{reel} (YouTube)"] = waits or \
                 f"the Short whose question it answers goes out later, {_ist(after.isoformat())}"
             continue
+        if slot is None:
+            try:
+                slot = youtube_slot(_due(folder), now, planned, after)
+            except RuntimeError as err:
+                done["held"][f"{reel} (YouTube)"] = str(err)
+                continue
         if _minute(slot) in {_minute(when) for when in _dues(youtube=True) + planned}:
             done["held"][f"{reel} (YouTube)"] = f"{slot:%a %d %b %H:%M} IST has a Short already"
             continue
         planned.append(slot)
+        mirrored[reel] = slot
         if dry:
             done["mirrored"][reel] = f"would go out on YouTube {slot.astimezone(IST):%a %d %b %H:%M} IST, {why}"
             continue
@@ -343,6 +396,7 @@ def mirror(now: datetime, done: dict, dry: bool = False) -> list[datetime]:
             return planned
         except Exception as err:
             planned.remove(slot)
+            mirrored.pop(reel)
             log.exception("mirroring %s to YouTube failed", reel)
             done["errors"].append(f"mirroring {reel} to YouTube failed: {err}"[:300])
     return planned
@@ -357,7 +411,7 @@ def facebook_slot(due: datetime, now: datetime, taken: set[datetime], per_day: C
             (after is None or exact > after):
         return exact
     first = max(due, now + LEAD, after or due).astimezone(IST).date()
-    for have, days in ((0, COVER_DAYS), (1, FULL_DAYS), (2, FULL_DAYS)):
+    for have, days in FILL:
         for offset in range(days):
             day = first + timedelta(days=offset)
             if per_day[day] > have:
@@ -620,7 +674,7 @@ def _reel_slot(now: datetime, taken: set[datetime], after: datetime | None = Non
                     return slot
         return None
     per_day = Counter(when.date() for when in taken)
-    for have, days in ((0, COVER_DAYS), (1, FULL_DAYS), (2, FULL_DAYS)):
+    for have, days in FILL:
         for day in _ahead(now, days):
             if per_day[day] <= have and (slot := _open(day, EVENING_FIRST, taken, now)):
                 return slot
@@ -681,8 +735,8 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
 
 def idle_days(now: datetime, planned: list[datetime], reposts: bool = False) -> list[str]:
     """The next two days (from today while it still has a slot) when nothing is due on Instagram; none with `reposts`
-    (reel_repost.ready), since an older Reel then goes out again a few hours ahead. YouTube has a Short only on the
-    days a Reel did well enough (pick_short), so its days don't count."""
+    (reel_repost.ready), since an older Reel then goes out again a few hours ahead. YouTube's Shorts follow
+    Instagram's Reels (EVERY_SHORT, or pick_short's one a day), so its days don't count."""
     if reposts:
         return []
     days = {_minute(when).date() for when in _dues() + planned}

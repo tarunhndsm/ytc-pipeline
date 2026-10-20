@@ -97,6 +97,11 @@ GROWTH_MINUTES = 40
 GROWTH_EVERY = timedelta(hours=5, minutes=30)
 # Before the factory job's --until; the job itself stops 10 minutes after it.
 GROWTH_NEEDS = timedelta(minutes=12)
+# The factory job works in rounds, each one call of reel_factory.work shipped and pushed before the next, so a failed
+# picture try is tried again and a finished Reel is followed by the next story within the hour (on 20 Oct one run
+# finished a QA in 3 minutes and stopped with 45 left). The smallest step (reel_factory.NEEDS) needs ROUND_MIN.
+ROUNDS = 8
+ROUND_MIN = timedelta(minutes=5)
 
 
 def _read(path: Path) -> dict:
@@ -263,10 +268,10 @@ def _keep_log(store: reel_media.Store, release: str, path: Path) -> None:
         log.warning("couldn't keep %s: %s", path.name, err)
 
 
-def _step(command: list[str], env: dict, log_file: Path, timeout: int) -> tuple[int, dict]:
+def _step(command: list[str], env: dict, log_file: Path, timeout: int, append: bool = False) -> tuple[int, dict]:
     """Run a run's step on the clone, its log in a file; the exit code (124 when stopped) and its last JSON line."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    with log_file.open("w") as err:
+    with log_file.open("a" if append else "w") as err:
         try:
             run = subprocess.run(command, cwd=cloud.CHECKOUT / "pipeline", env=env, stdout=subprocess.PIPE, stderr=err,
                                  text=True, timeout=timeout)
@@ -329,8 +334,29 @@ def _keep_wip(store: reel_media.Store, reel: str, done: dict) -> None:
             done["errors"].append(f"couldn't keep {reel}'s half-made folder: {err}"[:300])
 
 
+def _growth_due() -> bool:
+    """The growth desk's last run (its state.json on the clone) is GROWTH_EVERY old, or it never ran."""
+    try:
+        return datetime.now(timezone.utc) - datetime.fromisoformat(
+            _read(cloud.CHECKOUT / GROWTH / "state.json").get("ran", "")) >= GROWTH_EVERY
+    except (ValueError, TypeError):
+        return True
+
+
+def _another_round(rounds: list[dict], until: datetime | None) -> bool:
+    """Whether the factory job starts another round: it has the time for a step, and the last round moved a Reel on
+    without being stopped by the clock, the quota, the credits, an outage or a failure to keep or ship its work."""
+    last = rounds[-1]
+    if until is None or len(rounds) >= ROUNDS or last.get("exit") or last.get("errors") or not last.get("reel"):
+        return False
+    if last.get("result") not in ("made", "failed", "set aside", "not sent back") or last.get("transient"):
+        return False
+    return until - datetime.now(timezone.utc) >= ROUND_MIN
+
+
 def factory(force: bool = False, until: datetime | None = None) -> dict:
-    """reel_cloud.factory_run on CircleCI: one Reel's next steps, then it ships or waits in the releases."""
+    """reel_cloud.factory_run on CircleCI, in rounds while the job lasts: each round one Reel's next steps, then it
+    ships or waits in the releases. With the growth desk due, the rounds leave it GROWTH_NEEDS."""
     def begin() -> reel_media.Store:
         prepare()
         return reel_media.Store()
@@ -345,6 +371,21 @@ def factory(force: bool = False, until: datetime | None = None) -> dict:
         saved.setdefault(key, {})
     resumed = [reel for reel, mine in saved["reels"].items() if not mine.get("pushed") and not mine.get("set_aside")
                and store.bring_folder(f"wip {reel}", reel, CONTENT)]
+    rounds_until = until - GROWTH_NEEDS if until and _growth_due() else until
+    rounds: list[dict] = []
+    while not rounds or _another_round(rounds, rounds_until):
+        saved, done = _factory_round(store, saved, force, rounds_until, len(rounds) + 1)
+        rounds.append(done)
+    done = rounds[-1] | {"resumed": resumed}
+    if len(rounds) > 1:
+        done["rounds"] = [{k: r[k] for k in ("reel", "decision", "result", "why", "pushed") if r.get(k)} for r in rounds]
+    return done
+
+
+def _factory_round(store: reel_media.Store, saved: dict, force: bool, until: datetime | None,
+                   number: int) -> tuple[dict, dict]:
+    """One call of reel_factory.work on the clone, then its Reel ships or waits in the releases, and the state and
+    whatever moved are pushed; the state after it and what the round did."""
     state_file = Path(tempfile.gettempdir()) / "factory-state.json"
     stored_file = Path(tempfile.gettempdir()) / "factory-stored.json"
     _write(state_file, saved)
@@ -355,9 +396,10 @@ def factory(force: bool = False, until: datetime | None = None) -> dict:
                *(["--until", until.isoformat()] if until else [])]
     # A step stopped at `until` takes 10 s to die, and the step's own wrap-up follows.
     limit = int((until - datetime.now(timezone.utc)).total_seconds()) + 360 if until else reel_cloud.FACTORY_MINUTES * 60
-    code, done = _step(command, _env(YTC_RANK_HERE="1"), LOGS / "factory.log", max(limit, 120))
+    log.info("factory round %d", number)
+    code, done = _step(command, _env(YTC_RANK_HERE="1"), LOGS / "factory.log", max(limit, 120), append=number > 1)
     saved = _read(state_file) or saved
-    done |= {"resumed": resumed, "exit": code, "errors": []}
+    done |= {"round": number, "exit": code, "errors": []}
     if code:
         done["errors"].append("the factory's step ran out of time" if code == 124
                               else f"the factory's step failed (exit {code})")
@@ -404,7 +446,7 @@ def factory(force: bool = False, until: datetime | None = None) -> dict:
         raise
     if reel and result == "made" and saved["reels"][reel].get("pushed"):
         store.drop(f"wip {reel}")
-    return done
+    return saved, done
 
 
 def selftest() -> dict:

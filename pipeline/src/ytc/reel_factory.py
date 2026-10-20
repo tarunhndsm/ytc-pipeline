@@ -46,9 +46,10 @@ from . import reel_pictures, reel_rescue, reel_writer, reels
 IST = ZoneInfo("Asia/Kolkata")
 PENDING_MIN = 3
 AHEAD_MIN = 10
-# Instagram has 3 slots a day and about half the Reels pass the judge; a Reel sent back for new pictures counts
-# again. The supply check (PENDING_MIN, AHEAD_MIN) stops the factory well before this once the queue is full.
-DAILY_CAP = 8
+# Instagram has 4 slots a day (3 to 4 Reels a day, owner 20 Oct) and about half the Reels pass the judge; a Reel sent
+# back for new pictures or rescued counts again. The supply check (PENDING_MIN, AHEAD_MIN) stops the factory well
+# before this once the queue is full.
+DAILY_CAP = 10
 GIVE_UP = 3
 # Lines without a picture of their own the picture step allows on its last try, so the story isn't set aside for
 # want of one more picture (ak041 was made with 4); a Reel the judge then fails on its pictures can still be rescued.
@@ -78,8 +79,10 @@ REDO = "work/redo"
 PAUSE = reels.REELS / "FACTORY_PAUSE"
 BACKLOG = reels.REELS / "backlog.md"
 RECORD = "instagram.json"
-# Minutes a step needs on CircleCI's 4-CPU machine; with --until, a step isn't started with less time left.
-NEEDS = {"write": 10, "pictures": 20, "render": 30, "qa": 40, "rescue": 5, "seal": 5}
+# Minutes a step needs on CircleCI's 4-CPU machine; with --until, a step isn't started with less time left. Measured
+# on 20 Oct: write 6.5, pictures 4.5-8.5, render 8-12, QA 3-21 (two fix rounds, each rendering again); a QA cut short
+# looks again at the render it left, and a cut render starts over.
+NEEDS = {"write": 10, "pictures": 12, "render": 15, "qa": 25, "rescue": 5, "seal": 5}
 
 
 def _read(path: Path):
@@ -392,10 +395,12 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
         if code == -1 and cut and transient.get(step, 0) < TRANSIENT_GIVE_UP:
             transient[step] = transient.get(step, 0) + 1
             done["why"] = f"{step} ran out of this run's time ({transient[step]} of {TRANSIENT_GIVE_UP})"
+            done["transient"] = True
             return "failed"
         if code != -1 and TRANSIENT.search(last) and transient.get(step, 0) < TRANSIENT_GIVE_UP:
             transient[step] = transient.get(step, 0) + 1
             done["why"] = f"{step} hit an outage or network error ({transient[step]} of {TRANSIENT_GIVE_UP}): {last}"
+            done["transient"] = True
             return "failed"
         # A rescue that can't be done (too few pictures left, a render that fails its checks) won't be done by trying
         # again, and the new stories would wait behind it.
