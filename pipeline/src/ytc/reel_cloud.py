@@ -1374,8 +1374,9 @@ def factory_run(force: bool = False) -> dict:
         try:
             done["shipped"] = _ship(reel, done.get("story", ""))
             saved["reels"][reel]["pushed"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            today = f"{datetime.now(IST):%Y-%m-%d}"
-            saved["made"][today] = saved["made"].get(today, 0) + 1
+            if not saved["reels"][reel].get("rescue"):
+                today = f"{datetime.now(IST):%Y-%m-%d}"
+                saved["made"][today] = saved["made"].get(today, 0) + 1
             shutil.rmtree(FACTORY_ROOT / "wip" / reel, ignore_errors=True)
         except Exception as err:
             log.exception("shipping %s failed", reel)

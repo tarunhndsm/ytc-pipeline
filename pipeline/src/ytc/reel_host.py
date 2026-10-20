@@ -417,8 +417,9 @@ def _factory_round(store: reel_media.Store, saved: dict, force: bool, until: dat
             # Kept until the push lands: a run that can't push leaves the next run a finished Reel to ship.
             store.keep_folder(f"wip {reel}", CONTENT / reel)
             saved["reels"][reel]["pushed"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            today = f"{datetime.now(reel_cloud.IST):%Y-%m-%d}"
-            saved["made"][today] = saved["made"].get(today, 0) + 1
+            if not saved["reels"][reel].get("rescue"):
+                today = f"{datetime.now(reel_cloud.IST):%Y-%m-%d}"
+                saved["made"][today] = saved["made"].get(today, 0) + 1
             paths += [f"content/instagram/{reel}", BACKLOG]
             message = f"Reel factory: {reel}, {done.get('story', '')}: " + (
                 "rendered again on CircleCI without the pictures the judge faulted; the next reel run books it"

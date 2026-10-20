@@ -262,6 +262,7 @@ class DecideTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.passes: list[int] = []
+        self.offered: list[list[str]] = []
         found = {"booked": [], "pending": [], "failed": ["ak902"], "stuck": [], "unfinished": []}
         for patcher in (
                 patch.object(reel_factory, "PAUSE", Path(tmp.name) / "FACTORY_PAUSE"),
@@ -278,7 +279,8 @@ class DecideTests(unittest.TestCase):
 
     def _to_render(self, failed, stored=None, paintings=0):
         self.passes.append(paintings)
-        return ["ak902"] if paintings else []
+        self.offered.append(list(failed))
+        return ["ak902"] if paintings and "ak902" in failed else []
 
     def test_a_reel_that_needs_paintings_is_rescued_while_the_neurons_last(self) -> None:
         reel, done = reel_factory.decide({"reels": {}, "made": {}}, self.now, False)
@@ -290,6 +292,25 @@ class DecideTests(unittest.TestCase):
         reel, done = reel_factory.decide(state, self.now, False)
         self.assertEqual((reel, done["decision"]), (None, "no readable story"))
         self.assertEqual(self.passes, [0])
+
+    def test_a_day_at_the_cap_still_rescues(self) -> None:
+        reel, done = reel_factory.decide({"reels": {}, "made": {"2026-10-20": reel_factory.DAILY_CAP}}, self.now, False)
+        self.assertEqual((reel, done["decision"]), ("ak902", "rescuing"))
+
+    def test_a_day_at_the_cap_finishes_a_reel_already_started(self) -> None:
+        found = {"booked": [], "pending": [], "failed": [], "stuck": [], "unfinished": ["ak903"]}
+        with patch.object(reel_factory, "supply", return_value=found):
+            reel, done = reel_factory.decide({"reels": {}, "made": {"2026-10-20": reel_factory.DAILY_CAP}}, self.now,
+                                             False)
+        self.assertEqual((reel, done["decision"]), ("ak903", "resuming"))
+
+    def test_a_day_at_the_cap_sends_nothing_to_the_judge_and_paints_no_reel_that_can_go_back(self) -> None:
+        state = {"reels": {}, "made": {"2026-10-20": reel_factory.DAILY_CAP}}
+        with patch.object(reel_factory, "_pictures_failed", return_value=True), \
+                patch.object(reel_factory.reel_writer, "next_story", return_value=("a story",)):
+            reel, done = reel_factory.decide(state, self.now, False)
+        self.assertEqual((reel, done["decision"]), (None, f"already made {reel_factory.DAILY_CAP} today"))
+        self.assertEqual(self.offered, [["ak902"], []])
 
 
 if __name__ == "__main__":

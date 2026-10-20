@@ -48,9 +48,10 @@ from . import reel_art, reel_pictures, reel_rescue, reel_writer, reels
 IST = ZoneInfo("Asia/Kolkata")
 PENDING_MIN = 3
 AHEAD_MIN = 10
-# Instagram has 4 slots a day (3 to 4 Reels a day, owner 20 Oct) and about half the Reels pass the judge; a Reel sent
-# back for new pictures or rescued counts again. The supply check (PENDING_MIN, AHEAD_MIN) stops the factory well
-# before this once the queue is full.
+# Reels a day that go to the judge, new or sent back for new pictures: about what its two judgments a Reel leave of
+# the day's quota. Instagram has 4 slots a day (3 to 4 Reels a day, owner 20 Oct) and about half the Reels pass;
+# rescues go out unjudged and don't count. The supply check (PENDING_MIN, AHEAD_MIN) stops the factory well before
+# this once the queue is full.
 DAILY_CAP = 10
 GIVE_UP = 3
 # Lines without a picture of their own the picture step allows on its last try, so the story isn't set aside for
@@ -480,21 +481,23 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     short = len(found["pending"]) < PENDING_MIN or len(found["booked"]) + len(found["pending"]) < AHEAD_MIN
     if not (short or force or found["unfinished"]):
         return None, done | {"decision": "supply is enough"}
-    today = f"{now.astimezone(IST):%Y-%m-%d}"
-    if state["made"].get(today, 0) >= DAILY_CAP and not force:
-        return None, done | {"decision": f"already made {DAILY_CAP} today"}
+    capped = state["made"].get(f"{now.astimezone(IST):%Y-%m-%d}", 0) >= DAILY_CAP and not force
+    # The cap holds only what goes to the judge: a Reel already started is finished, and a rescue goes out unjudged.
     if found["unfinished"]:
         return found["unfinished"][0], done | {"decision": "resuming"}
-    # A rescue costs no model call and goes out; new pictures cost less than a new story, and the rest passed.
+    # A rescue costs no model call (paintings one framing check) and goes out; new pictures cost less than a new
+    # story, and the rest passed.
     if rescues := reel_rescue.to_render(found["failed"], stored):
         return rescues[0], done | {"decision": "rescuing"}
-    for reel in found["failed"]:
-        if _pictures_failed(reels.REELS / reel, state["reels"].get(reel, {})):
-            return reel, done | {"decision": "picturing again"}
+    again = [reel for reel in found["failed"] if _pictures_failed(reels.REELS / reel, state["reels"].get(reel, {}))]
+    if again and not capped:
+        return again[0], done | {"decision": "picturing again"}
     # Too few of its pictures are left and it can't go back to the picture step: paintings stand in for them.
     if reel_art.ready() and (paintings := int(_neurons_left(state, now) // reel_art.NEURONS_EACH)) and (
-            rescues := reel_rescue.to_render(found["failed"], stored, paintings)):
+            rescues := reel_rescue.to_render([r for r in found["failed"] if r not in again], stored, paintings)):
         return rescues[0], done | {"decision": "rescuing"}
+    if capped:
+        return None, done | {"decision": f"already made {DAILY_CAP} today"}
     if not reel_writer.next_story():
         done["alerts"].append(("backlog", "the backlog has no story the writer can read; no Reel made"))
         return None, done | {"decision": "no readable story"}
