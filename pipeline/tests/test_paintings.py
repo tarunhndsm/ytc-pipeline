@@ -125,6 +125,16 @@ class PaintTests(unittest.TestCase):
             with self.assertRaises(reel_art.OutOfNeurons):
                 reel_art._run("@cf/black-forest-labs/flux-2-klein-4b", "a painting", 1)
 
+    def test_the_figures_a_brief_names_are_painted_as_the_old_paintings_show_them(self) -> None:
+        text = reel_art.prompt({"picture": "Pahari painting of Yamaraja bowing deeply before Krishna and Balarama."})
+        self.assertTrue(text.startswith("Pahari painting of Yamaraja bowing deeply before Krishna and Balarama. "
+                                        "Yama, god of death, is dark-skinned"))
+        self.assertLess(text.index("Krishna has blue skin"), text.index("Balarama has fair skin"))
+        self.assertNotIn("Rama has", reel_art.icons("Scenes from the Ramayana and the life of Parashurama"))
+        self.assertEqual(reel_art.icons("Siva and Brahma, Vishnu, Indra"), "Shiva has pale ash-smeared skin, matted "
+                         "locks with the crescent moon, a snake at his neck and a trident. Brahma has four bearded "
+                         "heads. Vishnu has blue skin and four arms holding a conch, a discus, a mace and a lotus. ")
+
     def test_line_1_asks_for_a_close_vivid_figure_and_every_line_for_the_style(self) -> None:
         first, other = (reel_art.prompt({"picture": "Kunti at the river."}, n == 1) for n in (1, 2))
         self.assertTrue(first.startswith("Kunti at the river. The figure large and close"))

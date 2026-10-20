@@ -17,6 +17,7 @@ import io
 import logging
 import os
 import random
+import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -50,6 +51,26 @@ STYLE = ("Indian miniature painting in the 18th-century Pahari style: opaque wat
          "no text, letters, border or frame.")
 # Line 1's picture is the Reel's first frame in the feed (reel_pictures.CHOOSE_PROMPT).
 FIRST = "The figure large and close, vivid and colourful, clear at phone size. "
+# How the old paintings show the figures a brief names, at most MAX_ICONS of them: the briefs give only the name, and
+# FLUX painted Krishna pale and Yama as a sage (ak072, 20 Oct).
+ICONS = (
+    (r"\bkrishna\b", "Krishna has blue skin, a peacock feather in his crown and a yellow dhoti"),
+    (r"\brama(chandra)?\b", "Rama has blue skin, a crown, a bow and a quiver"),
+    (r"\bvishnu\b|\bnarayana\b", "Vishnu has blue skin and four arms holding a conch, a discus, a mace and a lotus"),
+    (r"\bs(h)?iva\b|\bmahadeva\b", "Shiva has pale ash-smeared skin, matted locks with the crescent moon, a snake at "
+                                   "his neck and a trident"),
+    (r"\bbalarama\b", "Balarama has fair skin, blue garments and a plough"),
+    (r"\bhanuman\b", "Hanuman is a monkey god with a mace"),
+    (r"\bganesh(a)?\b|\bganapati\b", "Ganesha has an elephant's head"),
+    (r"\byama(raja?)?\b", "Yama, god of death, is dark-skinned and crowned, with a mace and a noose"),
+    (r"\bbrahma\b", "Brahma has four bearded heads"),
+    (r"\bindra\b", "Indra is crowned and rides the white elephant Airavata"),
+    (r"\bdurga\b", "Durga rides a lion and holds weapons in many arms"),
+    (r"\blakshmi\b", "Lakshmi sits on a lotus"),
+    (r"\bsaraswati\b", "Saraswati holds a veena, a white swan beside her"),
+    (r"\bnarada\b", "Narada is a sage carrying a veena"),
+)
+MAX_ICONS = 3
 
 
 class OutOfNeurons(RuntimeError):
@@ -60,8 +81,15 @@ def ready() -> bool:
     return bool(os.environ.get("IG_CLOUDFLARE_ACCOUNT_ID") and os.environ.get("IG_CLOUDFLARE_API_TOKEN"))
 
 
+def icons(brief: str) -> str:
+    """How the old paintings show the figures `brief` names, in the order it names them."""
+    found = sorted((match.start(), text) for pattern, text in ICONS if (match := re.search(pattern, brief, re.I)))
+    return "".join(f"{text[0].upper()}{text[1:]}. " for _, text in found[:MAX_ICONS])
+
+
 def prompt(beat: dict, first: bool = False) -> str:
-    return f"{beat['picture'].strip().rstrip('.')}. {FIRST if first else ''}{STYLE}"[:2000]
+    brief = beat["picture"].strip().rstrip(".")
+    return f"{brief}. {FIRST if first else ''}{icons(brief)}{STYLE}"[:2000]
 
 
 def _run(model: str, text: str, seed: int) -> tuple[bytes, float]:
