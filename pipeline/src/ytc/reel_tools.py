@@ -106,6 +106,7 @@ def met(query: str, limit: int = 25, workers: int = 8) -> list[dict]:
     with ThreadPoolExecutor(workers) as pool:
         objects = list(pool.map(fetch, ids))
     return [{"ref": f"met:{o['objectID']}", "title": o["title"], "date": o.get("objectDate"), "culture": o.get("culture"),
+             "country": o.get("country"), "region": o.get("region"), "department": o.get("department"),
              "width": None, "height": None, "url": o["primaryImage"], "page": o.get("objectURL"),
              "thumb": o.get("primaryImageSmall"),
              "license": "Public domain", "allowed": True, "source": "The Metropolitan Museum of Art"}

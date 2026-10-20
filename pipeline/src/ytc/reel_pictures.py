@@ -77,8 +77,9 @@ OTHER_FAITH = re.compile(r"\b(jaina?|jina|mahavira|tirthankara|kalpa[- ]?sutra|p
                          r"jesus|madonna|ranjit singh|persia\w*|safavid|borobudur)\b", re.I)
 # A book of Hindu myths, with Indian artists' paintings of the epics, whose title names the Buddhists too.
 NOT_OTHER_FAITH = re.compile(r"myths of the hindus (&|and) buddhists", re.I)
-# Cleveland and the Met say where an object was made ("Northern India, Pahari kingdoms", "China, Ming dynasty"), and
-# art from outside South Asia is never wanted. Commons doesn't say, so its files go by their titles alone.
+# Cleveland and the Met say where an object was made ("Northern India, Pahari kingdoms", "China, Ming dynasty"), the
+# Met not always (from_south_asia), and art from outside South Asia is never wanted. Commons doesn't say, so its files
+# go by their titles alone.
 # The Art Institute of Chicago names only the region or court ("Jodhpur", "Kerala", "Uttar Pradesh"); those names are
 # whole words, so "Dakota" or "Normandie" don't pass.
 SOUTH_ASIA = re.compile(r"india|nepal|pakistan|bangladesh|sri lanka|ceylon|deccan|kashmir|bengal|rajasthan|punjab|"
@@ -402,7 +403,17 @@ def _search(term: str) -> list[dict]:
             log.info("%s search for %r failed: %s", find.__name__, term, str(err)[:120])
     return [h for h in hits if h["allowed"] and h.get("thumb") and h.get("url")
             and int(h.get("height") or MIN_HEIGHT) >= MIN_HEIGHT and not h["url"].lower().endswith(_NOT_PICTURES)
-            and not other_faith(h.get("title") or "") and (not h.get("culture") or SOUTH_ASIA.search(h["culture"]))]
+            and not other_faith(h.get("title") or "") and from_south_asia(h)]
+
+
+def from_south_asia(hit: dict) -> bool:
+    """Whether a hit can be South Asian art. The Met leaves the culture empty for much of its Egyptian and European art,
+    so its country, region and department count too: ak068's lines about scales were offered a Book of the Dead and
+    pocket watches on 20 Oct. With no place given, the Met's Asian Art passes, and any title naming the epics' people."""
+    place = " ".join(filter(None, (hit.get("culture"), hit.get("country"), hit.get("region"))))
+    if place:
+        return bool(SOUTH_ASIA.search(place))
+    return hit.get("department") in (None, "Asian Art") or bool(figures(hit.get("title") or ""))
 
 
 def other_faith(title: str) -> bool:

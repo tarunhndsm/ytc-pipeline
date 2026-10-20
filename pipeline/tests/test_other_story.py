@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ytc import reel_pictures, reel_writer
+from ytc import reel_pictures, reel_tools, reel_writer
 
 PRADYUMNA = 'Pradyumna and Samvara fight with maces, from the "Large Basohli Bhagavata Purana"'
 DARBAR = "Rama and Sita enthroned with Lakshmana and Hanuman attending, from a Kalighat album"
@@ -68,6 +68,45 @@ class OtherFaithTests(unittest.TestCase):
     def test_kept(self) -> None:
         for title in (DARBAR, "Maharaja Sawai Madho Singh of Jaipur in durbar", "King Shibi weighs his flesh"):
             self.assertFalse(reel_pictures.other_faith(title), title)
+
+
+class SouthAsiaTests(unittest.TestCase):
+    """Where a hit was made, by its culture, country, region or (the Met) department; Commons says nothing."""
+
+    def test_left_out(self) -> None:
+        for hit in ({"culture": "", "country": "Egypt", "department": "Egyptian Art", "title": "Book of the Dead"},
+                    {"culture": None, "department": "European Sculpture and Decorative Arts", "title": "Watch"},
+                    {"culture": "", "department": "Robert Lehman Collection", "title": "A Goldsmith in his Shop"},
+                    {"culture": "China", "department": "Asian Art", "title": "Seated Guanyin"}):
+            self.assertFalse(reel_pictures.from_south_asia(hit), hit)
+
+    def test_kept(self) -> None:
+        for hit in ({"culture": "", "country": "India", "department": "Islamic Art", "title": "The Court of Ravana"},
+                    {"culture": "India (Rajasthan)", "department": "Asian Art", "title": "Krishna"},
+                    {"department": "Asian Art", "title": "Seated Ganesha"},
+                    {"department": "Drawings and Prints", "title": "Krishna and Radha"},
+                    {"title": "Hanuman.jpg"},
+                    {"culture": "Jodhpur", "title": "A prince on a terrace"}):
+            self.assertTrue(reel_pictures.from_south_asia(hit), hit)
+
+    def test_the_met_says_where(self) -> None:
+        objects = {1: {"objectID": 1, "title": "Book of the Dead", "culture": "", "country": "Egypt",
+                       "department": "Egyptian Art", "isPublicDomain": True, "primaryImage": "https://e.org/1.jpg"}}
+
+        class Reply:
+            def __init__(self, body: dict) -> None:
+                self.body = body
+
+            def json(self) -> dict:
+                return self.body
+
+        def get(url: str, params: dict | None = None, **_: object) -> Reply:
+            return Reply({"objectIDs": [1]} if params else objects[int(url.rsplit("/", 1)[1])])
+
+        with patch.object(reel_tools.visuals, "_get", side_effect=get):
+            [hit] = reel_tools.met("scales", 5, workers=1)
+        self.assertEqual((hit["country"], hit["department"]), ("Egypt", "Egyptian Art"))
+        self.assertFalse(reel_pictures.from_south_asia(hit))
 
 
 class OtherStoryTests(unittest.TestCase):
