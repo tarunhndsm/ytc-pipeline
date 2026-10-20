@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ytc import reel_pictures, reel_tools, reel_writer
+from ytc import reel_art, reel_pictures, reel_tools, reel_writer
 
 PRADYUMNA = 'Pradyumna and Samvara fight with maces, from the "Large Basohli Bhagavata Purana"'
 DARBAR = "Rama and Sita enthroned with Lakshmana and Hanuman attending, from a Kalighat album"
@@ -153,6 +153,7 @@ class PictureStepTests(unittest.TestCase):
         self.asked: list[list[int]] = []
         self.saved: dict = {}
         for patcher in (
+                patch.object(reel_art, "ready", return_value=False),
                 patch.object(reel_pictures, "candidates",
                              side_effect=lambda beats: {1: [_hit(r) for r in "abd"], 2: [_hit(r) for r in "dcb"]}),
                 patch.object(reel_pictures, "shortlist", side_effect=self._shortlist),
@@ -171,7 +172,7 @@ class PictureStepTests(unittest.TestCase):
         self.offered |= {hit["ref"] for hits in per_line.values() for hit in hits}
         return per_line
 
-    def _choose(self, beats, shown, story, purpose):
+    def _choose(self, beats, shown, story, purpose, fits=None):
         self.asked.append(sorted(shown))
         return {n: list(hits) for n, hits in shown.items()}
 

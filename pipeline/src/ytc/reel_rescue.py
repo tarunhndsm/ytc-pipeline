@@ -6,11 +6,13 @@ every other score 7 or more, nothing could be booked, and all three channels wen
 A Reel can be rescued when every score but visuals passes, its automatic checks found nothing, and no other Reel that
 can still go out answers the same quiz question (reel_cloud.unanswered would hold one of them for ever). Each line
 whose picture the judgments found fault with, for anything but being shown again (the picture step's rule), shows
-one of the Reel's own unfaulted pictures again, the nearest earlier one that keeps a picture off screen for a third
-line in a row; line 1, the first frame in the feed, takes the first unfaulted picture. A Reel with no picture faulted
-goes out as it is (`mark`, from the reels run). Otherwise the factory renders it again (`prepare`, reel_tools render,
-`seal`) with its render's own narration, so no Gemini call is made, and without the QA step, whose spares the judge
-never saw.
+a painting made for it (reel_art, owner 20 Oct) when one passes the framing check, else one of the Reel's own
+unfaulted pictures again, the nearest earlier one that keeps a picture off screen for a third line in a row; line 1,
+the first frame in the feed, takes the first unfaulted picture. A Reel with no picture faulted goes out as it is
+(`mark`, from the reels run). Otherwise the factory renders it again (`prepare`, reel_tools render, `seal`) with its
+render's own narration, so the framing check is the only Gemini call, and without the QA step, whose spares the
+judge never saw. A Reel left with too few pictures of its own is rescued with paintings only once it can't go back
+to the picture step (reel_factory.decide), and while the day's neurons allow them.
 
 The record (reels.RESCUE) names the video it vouches for. A rescued Reel isn't turned down (reel_writer.turned_down),
 so the next Reel answers its question and the runs bring its render; reel_cloud books it below the bar, after the
@@ -34,7 +36,7 @@ from pathlib import Path
 
 import yaml
 
-from . import reel_pictures, reel_writer, reels
+from . import reel_art, reel_pictures, reel_writer, reels
 from .spec import ShortSpec
 
 log = logging.getLogger(__name__)
@@ -110,16 +112,56 @@ def why_not(folder: Path) -> str:
     return ""
 
 
-def plan(folder: Path) -> tuple[dict, dict, dict[int, str]]:
-    """The rescued short.yaml and pictures.json, and what each changed line shows now. Raises ValueError when too
-    few pictures are left."""
+def paintable(folder: Path) -> list[int]:
+    """The faulted lines a painting can take the place of: the story's, line 1 first, each with the brief its painting
+    is made from (reel_writer's "picture")."""
+    spec = _spec(folder)
+    beats = ((reels._read(folder / reel_writer.SCRIPT) or {}).get("script") or {}).get("beats") or []
+    return sorted((n for n in faulted(folder) if n <= len(beats) and beats[n - 1].get("picture")
+                   and spec["beats"][n - 1].get("role", "story") == "story"), key=lambda n: (n != 1, n))
+
+
+def paintings(folder: Path) -> dict[int, dict]:
+    """Paintings for the faulted lines that passed the framing check, by line; {} when Cloudflare isn't set up, the
+    day's neurons are spent or no model made one."""
+    if not reel_art.ready() or not (lines := paintable(folder)):
+        return {}
+    beats = json.loads((folder / reel_writer.SCRIPT).read_text(encoding="utf-8"))["script"]["beats"]
+    with reel_writer.gemini_only():
+        return reel_pictures.paint_framed(folder.name, beats, lines)
+
+
+def _stand_ins(folder: Path, count: int) -> dict[int, dict]:
+    """Paintings as `plan` gets them, for up to `count` faulted lines, to tell whether a rescue with them would do."""
+    return {n: {"ref": f"ai:{n}", "title": "", "url": "https://res.cloudinary.com/stand-in.jpg", "source": reel_art.SOURCE,
+                "license": reel_art.LICENSE, "size": [reel_art.WIDTH, reel_art.HEIGHT], "subject": [0.2, 0.2, 0.8, 0.8],
+                "faces": [], "kind": "painting", "hindi": ""} for n in paintable(folder)[:count]}
+
+
+def plan(folder: Path, painted: dict[int, dict] | None = None) -> tuple[dict, dict, dict[int, str]]:
+    """The rescued short.yaml and pictures.json, and what each changed line shows now: a faulted line its painting
+    (`painted`, by line, from `paintings`) where one was made. Raises ValueError when too few pictures are left."""
     spec, pictures = _spec(folder), json.loads((folder / reel_pictures.PICTURES).read_text(encoding="utf-8"))
     bad, shows = set(faulted(folder)), _shows(spec)
+    changes: dict[int, str] = {}
+    for number, hit in sorted((painted or {}).items()):
+        if number not in bad:
+            continue
+        reel_pictures.place(spec, number, hit)
+        pictures[str(number)] = {k: hit[k] for k in (*reel_pictures.HIT_KEYS, *reel_pictures.FRAMED_KEYS)
+                                 if hit.get(k) is not None}
+        bad.discard(number)
+        changes[number] = "a painting made for it"
+        for other in [n for n in shows if n != number and shows[n] == number]:
+            reel_pictures.reuse(spec, other, number)
+            if spec["beats"][other - 1].get("label"):
+                spec["beats"][other - 1]["label_y"] = (spec["captions"].get("hook_y", reel_pictures.HOOK_Y)
+                                                       if number == 1 else reel_pictures.HOOK_Y)
+            changes[other] = f"line {number}'s painting again"
     good = [n for n in sorted(shows) if shows[n] == n and str(n) in pictures and n not in bad
             and spec["beats"][n - 1].get("role", "story") == "story"]
     if len(good) < MIN_PICTURES:
         raise ValueError(f"only {len(good)} of its pictures weren't faulted; at least {MIN_PICTURES} are needed")
-    changes: dict[int, str] = {}
     if 1 in bad or 1 not in good:
         first = next(n for n in good if n != 1)
         reel_pictures.place(spec, 1, pictures[str(first)])
@@ -153,9 +195,10 @@ def plan(folder: Path) -> tuple[dict, dict, dict[int, str]]:
     return spec, kept, changes
 
 
-def to_render(failed: list[str], stored: set[str] | None = None) -> list[str]:
+def to_render(failed: list[str], stored: set[str] | None = None, paintings: int = 0) -> list[str]:
     """Of the Reels the judge failed, those the factory can rescue by rendering them again (with `stored`, only those
-    whose render is in the releases), the one keeping the most pictures first, then the newest."""
+    whose render is in the releases), the one keeping the most pictures first, then the newest. With `paintings`
+    (as many as the day's neurons allow), only those that need paintings to keep enough pictures of their own."""
     found = []
     for reel in failed:
         folder = reels.REELS / reel
@@ -163,7 +206,15 @@ def to_render(failed: list[str], stored: set[str] | None = None) -> list[str]:
         try:
             if (stored is not None and reel not in stored) or why_not(folder) or not faulted(folder):
                 continue
-            found.append((-len(plan(folder)[1]), -int(re.sub(r"\D", "", reel) or 0), reel))
+            if paintings:
+                try:
+                    plan(folder)
+                    continue
+                except ValueError:
+                    kept = plan(folder, _stand_ins(folder, min(paintings, reel_art.MAX_PAINTED)))[1]
+            else:
+                kept = plan(folder)[1]
+            found.append((-len(kept), -int(re.sub(r"\D", "", reel) or 0), reel))
         except Exception as err:
             log.info("%s can't be rescued: %s: %s", reel, type(err).__name__, err)
     return [reel for *_, reel in sorted(found)]
@@ -191,8 +242,6 @@ def prepare(folder: Path) -> dict:
             shutil.copy2(before / Path(name).name, folder / name)
     if why := why_not(folder):
         raise RuntimeError(f"{folder.name} can't be rescued: {why}")
-    bad = faulted(folder)
-    spec, kept, changes = plan(folder)
     store, release = reel_media.Store(), f"media {folder.name}"
     manifest = folder / "work" / "manifest.json"
     if store.read(release, reel_media.asset_name("work/manifest.json")) != manifest.read_bytes():
@@ -200,6 +249,8 @@ def prepare(folder: Path) -> dict:
     for name in ("work/narration.wav", "work/speech.json"):
         if not store.get(release, reel_media.asset_name(name), folder / name):
             raise RuntimeError(f"{release} has no {name}")
+    bad = faulted(folder)
+    spec, kept, changes = plan(folder, paintings(folder))
     before.mkdir(parents=True, exist_ok=True)
     for name in ("short.yaml", reel_pictures.PICTURES):
         shutil.copy2(folder / name, before / Path(name).name)
@@ -251,8 +302,12 @@ def note(folder: Path) -> dict:
 
 def told(folder: Path) -> str:
     """How the runs' reports name a Reel's rescue."""
-    return "rescued as it is" if (reels.rescued(folder) or {}).get("as_is") else \
-        "rescued without the pictures the judge faulted"
+    record = reels.rescued(folder) or {}
+    if record.get("as_is"):
+        return "rescued as it is"
+    if any("painting" in what for what in (record.get("changes") or {}).values()):
+        return "rescued with paintings for the pictures the judge faulted"
+    return "rescued without the pictures the judge faulted"
 
 
 def _now() -> str:

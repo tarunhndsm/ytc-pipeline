@@ -1,9 +1,10 @@
 """Choose every line's picture for a written Reel and frame it for a phone screen: candidates from the open-access
 collections for each line's search terms (reel_tools), the best few by SigLIP (rank.py), one look by a vision model
 at each line's candidates to choose, and a second look at each chosen picture, as the renderer will open it, to find
-its subject and faces and catch what mustn't be shown. The crops, caption heights and credits follow from that by
-rule, as plates.py lays pictures out. A try that leaves too many lines without a picture keeps the ones it found for
-the story's next try, which looks only for the rest.
+its subject and faces and catch what mustn't be shown. A line no museum picture shows (none passed, or only the right
+figure in another scene) gets a painting made for it (reel_art), which takes the same second look. The crops, caption
+heights and credits follow from that by rule, as plates.py lays pictures out. A try that leaves too many lines without
+a picture keeps the ones it found for the story's next try, which looks only for the rest.
 
     python -m ytc.reel_pictures <reel folder>     write <folder>/short.yaml from its work/script.json
 """
@@ -26,7 +27,7 @@ import requests
 import yaml
 from PIL import Image, ImageDraw, ImageFont
 
-from . import llm, pick, plates, rank, reel_tools, reel_writer, reels, visuals
+from . import llm, pick, plates, rank, reel_art, reel_tools, reel_writer, reels, visuals
 from .spec import ShortSpec
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,8 @@ AVOID = "work/avoid.json"
 # Of the 12 stories set aside for pictures by 19 Oct whose tries could be traced, 4 had every line but at most four
 # pictured on one try or another.
 KEPT = "work/kept.json"
+# The caption's credit line for the paintings made with AI (reel_art).
+MADE_CREDIT = "AI से बने चित्र: "
 HIT_KEYS = ("ref", "title", "date", "url", "page", "thumb", "source", "license", "artist", "width", "height")
 FRAMED_KEYS = ("size", "subject", "faces", "kind", "hindi")
 # A title naming another faith's figures or books, or a Mughal court, never reaches the models: both prompts forbid
@@ -306,8 +309,9 @@ _met_budget = {"searches": 0, "refused": False}
 CHOOSE_SCHEMA = {
     "type": "object",
     "properties": {"lines": {"type": "array", "items": {"type": "object", "properties": {
-        "line": {"type": "integer"}, "ranked": {"type": "array", "items": {"type": "string"}}},
-        "required": ["line", "ranked"]}}},
+        "line": {"type": "integer"}, "ranked": {"type": "array", "items": {"type": "string"}},
+        "fit": {"type": "string", "enum": ["moment", "figure", "scene", "elsewhere", "none"]}},
+        "required": ["line", "ranked", "fit"]}}},
     "required": ["lines"],
 }
 
@@ -338,6 +342,11 @@ the Yama of the Upanishads), a named deity, person or story other than the one t
 hasn't entered the story yet at that line (Hanuman beside Rama before they meet). Judges failed Reels for each of
 these. Where two candidates are close, keep the Reel to one kind of art (miniatures, or later realistic paintings)
 rather than a mix. Leave the list empty when nothing qualifies.
+
+For every line, also say how your first choice fits it (fit): "moment" (this very moment of the story), "figure" (a
+portrait or icon of the deity or person the line names), "scene" (it sets the scene), "elsewhere" (the right deity,
+person or place in another scene), or "none" (the list is empty). A line rated "elsewhere" or "none" gets a painting
+made for it.
 
 The story: {story}
 """
@@ -533,8 +542,10 @@ def _sheet(hits: list[dict], number: int) -> bytes:
     return buffer.getvalue()
 
 
-def choose(beats: list[dict], shown: dict[int, list[dict]], story: str, purpose: str) -> dict[int, list[dict]]:
-    """Each line's candidates in the order the model ranks them, best first."""
+def choose(beats: list[dict], shown: dict[int, list[dict]], story: str, purpose: str,
+           fits: dict[int, str] | None = None) -> dict[int, list[dict]]:
+    """Each line's candidates in the order the model ranks them, best first; with `fits`, how its first choice fits
+    each line goes there (CHOOSE_SCHEMA)."""
     labels: dict[str, dict] = {}
     parts: list = [CHOOSE_PROMPT.format(story=story)]
     for number, hits in shown.items():
@@ -551,6 +562,8 @@ def choose(beats: list[dict], shown: dict[int, list[dict]], story: str, purpose:
         if item["line"] in ranked:
             names = [label.strip().strip("[]") for label in item["ranked"]]
             ranked[item["line"]] = [labels[name] for name in names if name in labels]
+            if fits is not None and item.get("fit"):
+                fits[item["line"]] = item["fit"]
     return ranked
 
 
@@ -700,7 +713,9 @@ def _who(hit: dict) -> str:
 
 
 def credit_lines(hits: list[dict]) -> str:
-    """The caption's picture credits, as the hand-made Reels give them."""
+    """The caption's picture credits, as the hand-made Reels give them, and the paintings made with AI (reel_art)."""
+    made = [h for h in hits if h.get("license") == reel_art.LICENSE]
+    hits = [h for h in hits if h.get("license") != reel_art.LICENSE]
     open_art = [f"{h['hindi']}, {_who(h)}" for h in hits if h["kind"] != "photo" and h["license"].lower().startswith(_OPEN)]
     other_art = [f"{h['hindi']}, {_who(h)} ({_license(h)})" for h in hits
                  if h["kind"] != "photo" and not h["license"].lower().startswith(_OPEN)]
@@ -711,6 +726,8 @@ def credit_lines(hits: list[dict]) -> str:
         lines.append("चित्र: " + "; ".join(p for p in (art, "; ".join(other_art)) if p))
     if photos:
         lines.append("फ़ोटो: " + "; ".join(photos))
+    if made:
+        lines.append(MADE_CREDIT + "; ".join(h["hindi"] for h in made))
     return "\n".join(lines)
 
 
@@ -811,7 +828,7 @@ def spares_for(number: int, hits: list[dict], in_use: set[str]) -> list[dict]:
 
 def with_credits(description: str, hits: list[dict]) -> str:
     """The description with its last lines, the picture credits, made for `hits`."""
-    kept = [line for line in description.rstrip("\n").split("\n") if not line.startswith(("चित्र: ", "फ़ोटो: "))]
+    kept = [line for line in description.rstrip("\n").split("\n") if not line.startswith(("चित्र: ", "फ़ोटो: ", MADE_CREDIT))]
     return "\n".join(kept) + "\n" + credit_lines(hits)
 
 
@@ -852,6 +869,25 @@ def keep_picks(folder: Path, beats: list[dict], chosen: dict[int, dict]) -> None
          for n, hit in sorted(chosen.items())}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
 
+def painted(reel: str, beats: list[dict], chosen: dict[int, dict], fits: dict[int, str]) -> dict[int, dict]:
+    """Paintings (reel_art) that passed the framing check, for the lines no museum picture shows: line 1 first, then
+    the lines without a picture, then those whose best was the right figure in another scene (`fits`)."""
+    own = own_lines(beats)
+    weak = [n for n in own if n not in chosen or (fits.get(n) in reel_art.WEAK and not chosen[n]["ref"].startswith("ai:"))]
+    return paint_framed(reel, beats, sorted(weak, key=lambda n: (n != 1, n in chosen, n)))
+
+
+def paint_framed(reel: str, beats: list[dict], lines: list[int]) -> dict[int, dict]:
+    """Paintings (reel_art) for `lines`, most needed first, that passed the framing check, by line."""
+    made = reel_art.paint_lines(reel, beats, lines)
+    if not made:
+        return {}
+    hits = {n: [hit] for n, hit in made.items()}
+    framed = frame_all(beats, hits, hits, f"{reel} painted framing")
+    log.info("paintings for lines %s passed the framing check", sorted(framed))
+    return framed
+
+
 def picture(folder: Path) -> Path:
     """Choose and frame every picture for the Reel in `folder` and write its short.yaml."""
     draft = json.loads((folder / reel_writer.SCRIPT).read_text(encoding="utf-8"))
@@ -877,9 +913,11 @@ def picture(folder: Path) -> Path:
     log.info("shortlisted %d pictures", sum(map(len, shown.values())))
     # Every line keeps its spares (below); only the lines without a kept picture are chosen and framed.
     todo = {n: hits for n, hits in shown.items() if n not in kept}
+    fits: dict[int, str] = {}
     with reel_writer.gemini_only():
-        ranked = choose(beats, todo, story, f"{draft['id']} pictures") if todo else {}
+        ranked = choose(beats, todo, story, f"{draft['id']} pictures", fits) if todo else {}
         chosen = kept | frame_all(beats, ranked, todo, f"{draft['id']} framing")
+        chosen |= painted(draft["id"], beats, chosen, fits)
     accepted = dict(chosen)
     if 1 not in chosen and chosen:
         # The hook can't go without a picture: it takes the next line's, which then shows it again.

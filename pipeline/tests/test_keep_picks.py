@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ytc import reel_pictures, reel_writer
+from ytc import reel_art, reel_pictures, reel_writer
 
 
 def _hit(ref: str) -> dict:
@@ -41,6 +41,7 @@ class KeepPicksTests(unittest.TestCase):
         self.saved: dict = {}
         os.environ.pop("YTC_MAX_REUSED", None)
         for patcher in (
+                patch.object(reel_art, "ready", return_value=False),
                 patch.object(reel_pictures, "candidates",
                              side_effect=lambda beats: {n: list(hits) for n, hits in self.per_line.items()}),
                 patch.object(reel_pictures, "shortlist", side_effect=lambda beats, per_line: per_line),
@@ -53,7 +54,7 @@ class KeepPicksTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def _choose(self, beats, shown, story, purpose):
+    def _choose(self, beats, shown, story, purpose, fits=None):
         self.asked.append(sorted(shown))
         self.offered |= {hit["ref"] for hits in shown.values() for hit in hits}
         return {n: list(hits) for n, hits in shown.items()}

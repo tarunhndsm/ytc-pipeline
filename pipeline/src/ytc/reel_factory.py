@@ -1,5 +1,5 @@
 """@ankahi.kathayein's Reel factory: makes the next backlog story into a Reel whenever the Instagram calendar runs
-short, so every slot (07:30, 13:00 and 20:00 IST) has one and the YouTube and Facebook mirrors have them too.
+short, so every slot (reel_cloud.SLOTS) has one and the YouTube and Facebook mirrors have them too.
 
 A factory run (reel_host.factory, on CircleCI; reel_cloud.factory_run on Modal) takes a fresh clone and calls `work`
 on it. `work` makes at most
@@ -12,9 +12,11 @@ folder, and the hourly reel_run judges and books it. These steps and the judge s
 Gemini outage or a network drop, until it has happened TRANSIENT_GIVE_UP times to the same step. A step that fails
 GIVE_UP times for any other reason sets the Reel aside; a story the writer can't write moves to "## Set aside".
 Before it starts a new story, a Reel the judge failed on its pictures alone is rescued (reel_rescue: rendered again
-with its own unfaulted pictures in place of the faulted ones, and booked below the bar), or, when too few of its
-pictures are left for that, goes back to the picture step once (send_back), without the pictures the judge found
-fault with. A rescue step that fails for any reason but an outage sets the Reel aside at once.
+with paintings or its own unfaulted pictures in place of the faulted ones, and booked below the bar), or, when too
+few of its pictures are left for that, goes back to the picture step once (send_back), without the pictures the judge
+found fault with; after that, paintings alone can still rescue it while the day's Cloudflare neurons last
+(reel_art.DAILY_NEURONS, counted in the state by UTC day). A rescue step that fails for any reason but an outage sets
+the Reel aside at once.
 With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run. When
 BACKLOG_LOW or fewer stories the writer can read are left, reel_backlog adds new ones that check out.
 
@@ -41,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import reel_pictures, reel_rescue, reel_writer, reels
+from . import reel_art, reel_pictures, reel_rescue, reel_writer, reels
 
 IST = ZoneInfo("Asia/Kolkata")
 PENDING_MIN = 3
@@ -82,7 +84,7 @@ RECORD = "instagram.json"
 # Minutes a step needs on CircleCI's 4-CPU machine; with --until, a step isn't started with less time left. Measured
 # on 20 Oct: write 6.5, pictures 4.5-8.5, render 8-12, QA 3-21 (two fix rounds, each rendering again); a QA cut short
 # looks again at the render it left, and a cut render starts over.
-NEEDS = {"write": 10, "pictures": 12, "render": 15, "qa": 25, "rescue": 5, "seal": 5}
+NEEDS = {"write": 10, "pictures": 12, "render": 15, "qa": 25, "rescue": 8, "seal": 5}
 
 
 def _read(path: Path):
@@ -269,7 +271,8 @@ def next_reset(now: datetime) -> datetime:
 
 
 def _spend(usage_log: Path) -> dict:
-    """What a step's model calls came to (llm.record's lines): calls, tokens and US dollars at paid prices."""
+    """What a step's model calls came to (llm.record's lines): calls, tokens and US dollars at paid prices, and the
+    Cloudflare neurons its paintings cost when it made any."""
     total = {"calls": 0, "tokens": 0, "usd": 0.0}
     for line in usage_log.read_text(encoding="utf-8").splitlines() if usage_log.exists() else []:
         try:
@@ -279,7 +282,22 @@ def _spend(usage_log: Path) -> dict:
         total["calls"] += 1
         total["tokens"] += sum(call.get(k) or 0 for k in ("input_tokens", "output_tokens", "thinking_tokens"))
         total["usd"] += call.get("usd") or 0
+        if call.get("neurons"):
+            total["neurons"] = total.get("neurons", 0) + call["neurons"]
     return total
+
+
+def _neurons_left(state: dict, now: datetime) -> float:
+    """What is left today of Ankahi's share of the Cloudflare neurons (reel_art.DAILY_NEURONS), by Cloudflare's UTC
+    day."""
+    return max(0.0, reel_art.DAILY_NEURONS - state.get("neurons", {}).get(f"{now:%Y-%m-%d}", 0))
+
+
+def _add_neurons(state: dict, now: datetime, neurons: float) -> None:
+    days = state.setdefault("neurons", {})
+    days[f"{now:%Y-%m-%d}"] = round(days.get(f"{now:%Y-%m-%d}", 0) + neurons, 2)
+    for day in sorted(days)[:-7]:
+        days.pop(day)
 
 
 def _add_spend(into: dict, spent: dict) -> None:
@@ -354,17 +372,22 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
         os.environ["YTC_USAGE_LOG"] = str(usage_log)
         if step == "pictures" and mine["fails"].get(step, 0) >= GIVE_UP - 1:
             os.environ["YTC_MAX_REUSED"] = str(LAST_TRY_REUSED)
+        if step in ("pictures", "rescue"):
+            os.environ["YTC_PAINT_NEURONS"] = str(_neurons_left(state, datetime.now(timezone.utc)))
         try:
             code, tail = _run(command, logs / f"{reel}_{step}.log", timeout)
         finally:
-            os.environ.pop("YTC_USAGE_LOG", None)
-            os.environ.pop("YTC_MAX_REUSED", None)
+            for name in ("YTC_USAGE_LOG", "YTC_MAX_REUSED", "YTC_PAINT_NEURONS"):
+                os.environ.pop(name, None)
         # Every try counts, failed ones too: they cost the same.
         spent = _spend(usage_log)
         _add_spend(mine.setdefault("usage", {}).setdefault(step, {}), spent)
         _add_spend(state.setdefault("spend", {}).setdefault(f"{datetime.now(IST):%Y-%m-%d}", {}), spent)
+        if spent.get("neurons"):
+            _add_neurons(state, datetime.now(timezone.utc), spent["neurons"])
         print(f"{reel} {step}: exit {code} after {time.time() - started:.0f} s, {spent['calls']} model calls, "
-              f"${spent['usd']:.3f} at paid prices", flush=True)
+              f"${spent['usd']:.3f} at paid prices" + (f", {spent['neurons']:.0f} neurons" if spent.get("neurons") else ""),
+              flush=True)
         if code == -1 and step == "render":
             # The encode writes the Reel's video in place, so a render stopped midway leaves a newer, broken one.
             (folder / f"{reel}.mp4").unlink(missing_ok=True)
@@ -468,6 +491,10 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     for reel in found["failed"]:
         if _pictures_failed(reels.REELS / reel, state["reels"].get(reel, {})):
             return reel, done | {"decision": "picturing again"}
+    # Too few of its pictures are left and it can't go back to the picture step: paintings stand in for them.
+    if reel_art.ready() and (paintings := int(_neurons_left(state, now) // reel_art.NEURONS_EACH)) and (
+            rescues := reel_rescue.to_render(found["failed"], stored, paintings)):
+        return rescues[0], done | {"decision": "rescuing"}
     if not reel_writer.next_story():
         done["alerts"].append(("backlog", "the backlog has no story the writer can read; no Reel made"))
         return None, done | {"decision": "no readable story"}

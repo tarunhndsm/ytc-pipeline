@@ -188,6 +188,20 @@ def host_video(path: Path, public_id: str) -> str:
     return url
 
 
+def host_image(path: Path, public_id: str) -> str:
+    cloud, key, secret = _cloudinary()
+    params = _signed({"public_id": public_id, "overwrite": "true", "timestamp": int(time.time())}, secret)
+    with path.open("rb") as fh:
+        response = requests.post(f"https://api.cloudinary.com/v1_1/{cloud}/image/upload", data={**params, "api_key": key},
+                                 files={"file": fh}, timeout=120)
+    response.raise_for_status()
+    url = response.json()["secure_url"]
+    head = requests.head(url, timeout=60, allow_redirects=True)
+    if head.status_code != 200 or not head.headers.get("content-type", "").startswith("image/"):
+        raise RuntimeError(f"Hosted picture is not publicly reachable as an image: {url} ({head.status_code})")
+    return url
+
+
 def unhost_video(public_id: str) -> None:
     cloud, key, secret = _cloudinary()
     params = _signed({"public_id": public_id, "invalidate": "true", "timestamp": int(time.time())}, secret)
