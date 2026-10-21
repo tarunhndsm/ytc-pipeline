@@ -383,6 +383,79 @@ class RefusedRescueTests(unittest.TestCase):
         self.assertIn("set_aside", self.state["reels"]["ak902"])
 
 
+class WaitingPicturesTests(unittest.TestCase):
+    """A picture step short of pictures while the day's neurons are out waits for them instead of using up its
+    tries, and the factory takes it up again once they're back."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.logs = Path(tmp.name) / "logs"
+        (Path(tmp.name) / "content" / "ak903").mkdir(parents=True)
+        for patcher in (
+                patch.object(reels, "REELS", Path(tmp.name) / "content"),
+                patch.object(reel_factory, "_steps", return_value=[("pictures", lambda: False, ["true"], 60)]),
+                patch.object(reel_factory, "_run", side_effect=self._run),
+                patch.object(reel_art, "ready", return_value=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        today = f"{datetime.now(timezone.utc):%Y-%m-%d}"
+        self.state = {"reels": {"ak903": {"fails": {}, "transient": {}}}, "made": {},
+                      "neurons": {today: reel_art.DAILY_NEURONS}}
+
+    def _run(self, command, log, timeout):
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("no painting for lines [2, 3]: today's 6000 neurons are spent\n", encoding="utf-8")
+        return 1, "LookupError: no usable picture for lines [2, 3, 4, 5, 6, 7, 9, 10]"
+
+    def _make(self) -> str:
+        return reel_factory.make("ak903", self.state, self.logs, {"steps": [], "alerts": []})
+
+    def test_short_of_pictures_while_the_neurons_are_out_it_waits(self) -> None:
+        self.assertEqual(self._make(), "failed")
+        mine = self.state["reels"]["ak903"]
+        self.assertEqual((mine.get("waits"), mine["fails"], mine["transient"]), ("paintings", {}, {"pictures": 1}))
+        self.assertEqual(reel_factory.supply(self.state, datetime.now(timezone.utc))["waiting"], ["ak903"])
+
+    def test_with_neurons_left_it_is_a_failed_try(self) -> None:
+        self.state["neurons"] = {}
+        self.assertEqual(self._make(), "failed")
+        mine = self.state["reels"]["ak903"]
+        self.assertEqual((mine.get("waits"), mine["fails"]), (None, {"pictures": 1}))
+
+    def test_without_cloudflare_it_is_a_failed_try(self) -> None:
+        with patch.object(reel_art, "ready", return_value=False):
+            self._make()
+        self.assertEqual(self.state["reels"]["ak903"]["fails"], {"pictures": 1})
+
+    def test_no_more_than_waiting_max_wait(self) -> None:
+        self.state["reels"] |= {f"ak8{n}": {"fails": {}, "waits": "paintings"} for n in range(reel_factory.WAITING_MAX)}
+        self._make()
+        mine = self.state["reels"]["ak903"]
+        self.assertEqual((mine.get("waits"), mine["fails"]), (None, {"pictures": 1}))
+
+    def test_taken_up_again_once_the_neurons_are_back(self) -> None:
+        found = {"booked": [], "pending": [f"ak0{n}" for n in range(10, 20)], "failed": [], "stuck": [],
+                 "unfinished": [], "waiting": ["ak903"]}
+        now = datetime(2026, 10, 22, 0, 33, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(reel_factory, "PAUSE", Path(tmp) / "FACTORY_PAUSE"), \
+                patch.object(reel_factory, "supply", return_value=found), \
+                patch.object(reel_factory, "readable_left", return_value=10):
+            spent = {"reels": {}, "made": {}, "neurons": {"2026-10-22": reel_art.DAILY_NEURONS}}
+            reel, done = reel_factory.decide(spent, now, False)
+            self.assertEqual((reel, done["decision"]), (None, "supply is enough"))
+            reel, done = reel_factory.decide({"reels": {}, "made": {}, "neurons": {}}, now, False)
+        self.assertEqual((reel, done["decision"]), ("ak903", "resuming with paintings"))
+
+    def test_resuming_ends_the_wait(self) -> None:
+        self._make()
+        self.state["neurons"] = {}
+        self._make()
+        mine = self.state["reels"]["ak903"]
+        self.assertEqual((mine.get("waits"), mine["fails"]), (None, {"pictures": 1}))
+
+
 class DecideTests(unittest.TestCase):
     """The factory rescues a Reel with paintings only after it couldn't be rescued or sent back without them."""
 

@@ -16,7 +16,8 @@ with paintings or its own unfaulted pictures in place of the faulted ones, and b
 few of its pictures are left for that, goes back to the picture step once (send_back), without the pictures the judge
 found fault with; after that, paintings alone can still rescue it while the day's Cloudflare neurons last
 (reel_art.DAILY_NEURONS, counted in the state by UTC day). A rescue step that fails for any reason but an outage sets
-the Reel aside at once.
+the Reel aside at once. A picture step left short of pictures while the day's neurons are out waits for them, and
+the factory goes on with other Reels meanwhile.
 With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run. When
 BACKLOG_LOW or fewer stories the writer can read are left, reel_backlog adds new ones that check out.
 
@@ -75,6 +76,11 @@ CREDITS_WAIT = timedelta(hours=1)
 TRANSIENT = re.compile(r"Overloaded|\b503\b|UNAVAILABLE|high demand|Read timed out|TimeoutError|NameResolution|"
                        r"ClientConnector|ConnectionError|Connection reset|RemoteDisconnected|"
                        r"Temporary failure in name resolution|SSLError", re.I)
+# The picture step's error when too few lines have a picture of their own (reel_pictures.picture).
+SHORT_OF_PICTURES = re.compile(r"LookupError: no usable picture for lines")
+# Stories that may wait for paintings at once; past that a story short of pictures uses up its tries as before, so a
+# long Cloudflare outage can't turn the backlog into half-made Reels.
+WAITING_MAX = 3
 # A judge's complaint about a picture shown again, which the picture step's rules settle, not about the picture itself.
 SHOWN_AGAIN = reel_rescue.SHOWN_AGAIN
 # Where a Reel sent back to the picture step keeps its old picks, QA, render and review, out of git.
@@ -160,11 +166,11 @@ def supply(state: dict, now: datetime, media: Path | None = None, stored: set[st
     failed or waiting longer than STUCK, and the factory's half-made ones. With `media` (the reels volume) or
     `stored` (the Reels whose render is in the releases), a Reel waits only once its render is there, as the hourly
     run needs."""
-    found = {"booked": [], "pending": [], "failed": [], "stuck": [], "unfinished": []}
+    found = {"booked": [], "pending": [], "failed": [], "stuck": [], "unfinished": [], "waiting": []}
     for folder in sorted(p for p in reels.REELS.glob("ak*") if p.is_dir()):
         mine = state["reels"].get(folder.name, {})
         if mine and not mine.get("pushed") and not mine.get("set_aside"):
-            found["unfinished"].append(folder.name)
+            found["waiting" if mine.get("waits") else "unfinished"].append(folder.name)
             continue
         if not (folder / "short.yaml").exists() or mine.get("set_aside"):
             continue
@@ -355,6 +361,7 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
     step can't finish by `until`."""
     folder = reels.REELS / reel
     mine = state["reels"].setdefault(reel, {"started": datetime.now(IST).isoformat(timespec="seconds"), "fails": {}})
+    mine.pop("waits", None)
     if (script := _read(folder / reel_writer.SCRIPT)) and script.get("row"):
         move_row(reel, script["row"])  # a resumed Reel's row, moved on a clone that was never pushed
         if not (folder / "short.yaml").exists() and reel_writer.end_on_story(folder):
@@ -439,6 +446,16 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             mine["pushed"] = rescue.get("pushed") or datetime.now(timezone.utc).isoformat(timespec="seconds")
             done["why"] = f"rescue needs paintings Cloudflare refuses until the neurons are back: {last}"
             return "failed"
+        if (step == "pictures" and SHORT_OF_PICTURES.search(last) and reel_art.ready()
+                and _neurons_left(state, datetime.now(timezone.utc)) < reel_art.NEURONS_EACH
+                and transient.get(step, 0) < TRANSIENT_GIVE_UP
+                and sum(bool(other.get("waits")) for other in state["reels"].values()) < WAITING_MAX):
+            # Another try today finds the same museum pictures (ak077's tries on 21 Oct each came up 8 lines short),
+            # and a story set aside comes back only by hand: it waits for the paintings (decide).
+            transient[step] = transient.get(step, 0) + 1
+            mine["waits"] = "paintings"
+            done["why"] = f"pictures wait for the day's neurons, for paintings of the lines no museum picture shows: {last}"
+            return "failed"
         # A rescue that can't be done (too few pictures left, a render that fails its checks) won't be done by trying
         # again, and the new stories would wait behind it.
         mine["fails"][step] = GIVE_UP if step in ("rescue", "seal") else mine["fails"].get(step, 0) + 1
@@ -491,13 +508,18 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     if (left := readable_left()) <= 1:
         done["alerts"].append(("backlog", f"only {left} stories the writer can read are left in the backlog, and "
                                f"refilling it didn't work ({state.get('refill_error') or 'no new story checked out'})"))
+    # A story the picture step was short of while the day's neurons were out goes on once they're back.
+    paintable = [reel for reel in found.get("waiting", [])
+                 if reel_art.ready() and _neurons_left(state, now) >= reel_art.NEURONS_EACH]
     short = len(found["pending"]) < PENDING_MIN or len(found["booked"]) + len(found["pending"]) < AHEAD_MIN
-    if not (short or force or found["unfinished"]):
+    if not (short or force or found["unfinished"] or paintable):
         return None, done | {"decision": "supply is enough"}
     capped = state["made"].get(f"{now.astimezone(IST):%Y-%m-%d}", 0) >= DAILY_CAP and not force
     # The cap holds only what goes to the judge: a Reel already started is finished, and a rescue goes out unjudged.
     if found["unfinished"]:
         return found["unfinished"][0], done | {"decision": "resuming"}
+    if paintable:
+        return paintable[0], done | {"decision": "resuming with paintings"}
     # A rescue costs no model call (paintings one framing check) and goes out; new pictures cost less than a new
     # story, and the rest passed.
     if rescues := reel_rescue.to_render(found["failed"], stored):
