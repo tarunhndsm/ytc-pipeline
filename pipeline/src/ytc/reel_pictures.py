@@ -363,7 +363,8 @@ FRAME_SCHEMA = {
         "faces": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}},
         "kind": {"type": "string", "enum": list(KINDS)},
         "hindi": {"type": "string"},
-    }, "required": ["line", "ok", "problem", "subject", "faces", "kind", "hindi"]}}},
+        "vanaras": {"type": "boolean"},
+    }, "required": ["line", "ok", "problem", "subject", "faces", "kind", "hindi", "vanaras"]}}},
     "required": ["pictures"],
 }
 
@@ -383,6 +384,8 @@ the Puranas, told in Hindi. For each one:
 - hindi: for the credits, what the picture itself is, going by its title, in 3 to 7 Hindi words, like "रथ में सूर्य
   और अरुण" or "गंगा देवी की मूर्ति". Never the line's own story: a picture titled "River Goddess Ganga" is "गंगा देवी की
   मूर्ति" even on a line about someone drowning.
+- vanaras: true when it shows Hanuman or any other monkey or bear (Rama's army, Sugriva, Jambavan), however small;
+  else false.
 """
 # A painting's letters are made up, unlike a museum picture's inscription: FLUX wrote captions that only look like
 # Devanagari on three of ak037's four (20 Oct), "no text" in the prompt notwithstanding.
@@ -445,10 +448,17 @@ def figures(text: str) -> set[str]:
             | {found.lastgroup for found in _HINDI_FIGURE.finditer(unicodedata.normalize("NFC", text))})
 
 
+# Rama's army of monkeys and bears is what judges most often found in a picture of another moment: Hanuman beside
+# Rama before they meet (ak054, ak060, ak069, ak073, ak074 and ak076 by 21 Oct), often under a title that names no
+# one ("Building the Bridge to Lanka"). A story that names none of them shows none of them.
+VANARAS = {"hanuman", "sugriva", "vali", "angada", "jambavan"}
+
+
 def other_story(title: str, named: set[str]) -> bool:
-    """Whether a picture's title names people of the epics but none of those the story names."""
+    """Whether a picture's title names people of the epics but none of those the story names, or one of the vanaras
+    in a story that names none of them."""
     shown = figures(title)
-    return bool(shown) and not shown & named
+    return bool(shown) and not shown & named or bool(shown & VANARAS) and not named & VANARAS
 
 
 def story_figures(draft: dict) -> set[str]:
@@ -612,10 +622,13 @@ def _opened(item: tuple[int, dict]) -> tuple[int, dict, bytes | None]:
 
 
 def frame_all(beats: list[dict], ranked: dict[int, list[dict]], shown: dict[int, list[dict]],
-              purpose: str, rules: str = "") -> dict[int, dict]:
+              purpose: str, rules: str = "", named: set[str] | None = None) -> dict[int, dict]:
     """Each line's picture, looked at as the renderer opens it: its size, subject and faces, kind and Hindi caption.
     A picture found wanting gives way to the line's next choice, then to the rest of its shortlist, for up to
-    FRAME_ROUNDS more looks; a line whose candidates all fail is left out."""
+    FRAME_ROUNDS more looks; a line whose candidates all fail is left out. With the story's people (`named`), a
+    picture of vanaras in a story that names none of them is found wanting too: Flash Lite, which does most of these
+    looks once the day's Flash requests are spent, let them through on 21 Oct."""
+    no_vanaras = named is not None and not named & VANARAS
     order = {n: ranked[n] + [h for h in shown[n] if h not in ranked[n]] for n in ranked}
     chosen: dict[int, dict] = {}
     used: set[str] = set()
@@ -641,12 +654,16 @@ def frame_all(beats: list[dict], ranked: dict[int, list[dict]], shown: dict[int,
         todo = []
         for number, hit in trial.items():
             item = looked.get(number) or {}
+            stranger = no_vanaras and item.get("vanaras")
             # Judges mark a Reel down for a photograph among its paintings, even where the prompt let one through.
-            if item.get("ok") and item["kind"] != "photo" and (subject := _box(item["subject"])) and "size" in hit:
+            if (item.get("ok") and item["kind"] != "photo" and not stranger and (subject := _box(item["subject"]))
+                    and "size" in hit):
                 chosen[number] = hit | {"subject": subject, "faces": [f for f in map(_box, item["faces"]) if f],
                                         "kind": item["kind"], "hindi": item["hindi"].strip()}
             else:
-                why = item.get("problem") or ("a photograph" if item.get("kind") == "photo" else "not framed")
+                why = item.get("problem") or ("a photograph" if item.get("kind") == "photo" else
+                                              "shows vanaras, whom this story doesn't name" if stranger else
+                                              "not framed")
                 log.info("line %d: %s set aside (%s)", number, hit["ref"], why)
                 hit.setdefault("set_aside", []).append(number)
                 todo.append(number)
@@ -917,7 +934,7 @@ def picture(folder: Path) -> Path:
     named = story_figures(draft)
     if elsewhere := {h["ref"] for hits in per_line.values() for h in hits if other_story(h.get("title") or "", named)}:
         per_line = {n: [h for h in hits if h["ref"] not in elsewhere] for n, hits in per_line.items()}
-        log.info("left out %d pictures whose titles name only other stories' people", len(elsewhere))
+        log.info("left out %d pictures whose titles name other stories' people", len(elsewhere))
     avoid: set[str] = set()
     if (folder / AVOID).exists():
         avoid = set(json.loads((folder / AVOID).read_text(encoding="utf-8"))["refs"])
@@ -936,7 +953,7 @@ def picture(folder: Path) -> Path:
     fits: dict[int, str] = {}
     with reel_writer.gemini_only():
         ranked = choose(beats, todo, story, f"{draft['id']} pictures", fits) if todo else {}
-        chosen = kept | frame_all(beats, ranked, todo, f"{draft['id']} framing")
+        chosen = kept | frame_all(beats, ranked, todo, f"{draft['id']} framing", named=named)
         chosen |= painted(draft["id"], beats, chosen, fits)
     accepted = dict(chosen)
     if 1 not in chosen and chosen:

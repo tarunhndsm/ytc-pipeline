@@ -59,7 +59,7 @@ class KeepPicksTests(unittest.TestCase):
         self.offered |= {hit["ref"] for hits in shown.values() for hit in hits}
         return {n: list(hits) for n, hits in shown.items()}
 
-    def _frame_all(self, beats, ranked, shown, purpose):
+    def _frame_all(self, beats, ranked, shown, purpose, **_):
         return {n: _framed(hits[0]["ref"]) for n, hits in ranked.items() if n in self.accept and hits}
 
     def _save(self, folder, spec, chosen, spares):

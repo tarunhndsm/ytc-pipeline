@@ -155,8 +155,13 @@ def _swap(folder: Path, spec: dict, lines: list[int], chosen: dict[int, dict],
     pools = {n: [s for s in spares.get(n, []) if s["ref"] not in in_use] for n in lines}
     got = {}
     if tried := {n: pool for n, pool in pools.items() if pool}:
+        try:
+            named = reel_pictures.story_figures(json.loads((folder / reel_writer.SCRIPT).read_text(encoding="utf-8")))
+        except (OSError, ValueError, KeyError):
+            named = None
         with reel_writer.gemini_only():
-            got = reel_pictures.frame_all(beats, tried, {n: [] for n in tried}, f"{folder.name} qa framing")
+            got = reel_pictures.frame_all(beats, tried, {n: [] for n in tried}, f"{folder.name} qa framing",
+                                          named=named)
     changes = {}
     for number in lines:
         old = chosen.get(number, {}).get("title") or f"line {beats[number - 1]['visual'].get('reuse')}'s picture"

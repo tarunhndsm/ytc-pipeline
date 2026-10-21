@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ytc import reel_art, reel_pictures, reel_tools, reel_writer
+from PIL import Image
+
+from ytc import llm, reel_art, reel_pictures, reel_tools, reel_writer
 
 PRADYUMNA = 'Pradyumna and Samvara fight with maces, from the "Large Basohli Bhagavata Purana"'
 DARBAR = "Rama and Sita enthroned with Lakshmana and Hanuman attending, from a Kalighat album"
@@ -131,6 +133,48 @@ class OtherStoryTests(unittest.TestCase):
         self.assertFalse(reel_pictures.other_story("Rama, Sita, and Lakshmana in the forest", named))
         self.assertTrue(reel_pictures.other_story("Yashoda and Gopal", named))
 
+    def test_the_vanaras_only_in_a_story_that_names_one(self) -> None:
+        # ak076, Rama Performs the Sacred Funeral Rites for Jatayu (21 Oct)
+        named = {"rama", "lakshmana", "jatayu", "sita", "ravana", "dasharatha", "valmiki"}
+        self.assertTrue(reel_pictures.other_story(
+            "Hanuman before Rama and Lakshmana: Folio from the dispersed “Mankot” Ramayana series", named))
+        self.assertTrue(reel_pictures.other_story(DARBAR, named))
+        self.assertFalse(reel_pictures.other_story("Rama and Lakshmana Discover the Dying Jatayu", named))
+        self.assertFalse(reel_pictures.other_story("Sugriva challenges his brother Vali, King of the Forest",
+                                                   {"rama", "sugriva"}))
+
+
+class FramingTests(unittest.TestCase):
+    """The framing check sets aside a picture of vanaras in a story that names none of them, whatever the model says."""
+
+    def setUp(self) -> None:
+        self.beats = [{"text": "पंक्ति 1", "picture": "Rama lights Jatayu's pyre"}]
+        self.hits = [_hit("b"), _hit("c")]
+        for patcher in (patch.object(reel_tools, "_picture", return_value=Image.new("RGB", (2000, 3000))),
+                        patch.object(llm, "generate", side_effect=self._answer)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _answer(self, parts, **_):
+        shown = next(part for part in parts if isinstance(part, str) and "(picture: " in part)
+        return {"pictures": [{"line": 1, "ok": True, "problem": "", "subject": [0.2, 0.2, 0.8, 0.8], "faces": [],
+                              "kind": "painting", "hindi": "एक पुराना चित्र", "vanaras": "Hanuman" in shown}]}
+
+    def _framed(self, named):
+        return {n: hit["ref"] for n, hit in
+                reel_pictures.frame_all(self.beats, {1: list(self.hits)}, {1: list(self.hits)}, "test framing",
+                                        named=named).items()}
+
+    def test_set_aside_where_the_story_names_none(self) -> None:
+        self.assertEqual(self._framed({"rama", "jatayu"}), {1: "c"})
+        self.assertEqual(self.hits[0].get("set_aside"), [1])
+
+    def test_kept_where_the_story_names_one(self) -> None:
+        self.assertEqual(self._framed({"rama", "hanuman"}), {1: "b"})
+
+    def test_kept_without_the_story(self) -> None:
+        self.assertEqual(self._framed(None), {1: "b"})
+
 
 class PictureStepTests(unittest.TestCase):
     """The picture step offers the models no picture of another story's people, nor keeps one from a failed try."""
@@ -159,7 +203,7 @@ class PictureStepTests(unittest.TestCase):
                 patch.object(reel_pictures, "shortlist", side_effect=self._shortlist),
                 patch.object(reel_pictures, "choose", side_effect=self._choose),
                 patch.object(reel_pictures, "frame_all",
-                             side_effect=lambda beats, ranked, shown, purpose: {
+                             side_effect=lambda beats, ranked, shown, purpose, **_: {
                                  n: _framed(hits[0]["ref"]) for n, hits in ranked.items() if hits}),
                 patch.object(reel_writer, "spec_fields",
                              side_effect=lambda draft: {"beats": [{} for _ in self.beats], "captions": {},
