@@ -272,13 +272,16 @@ def next_reset(now: datetime) -> datetime:
 
 
 def _spend(usage_log: Path) -> dict:
-    """What a step's model calls came to (llm.record's lines): calls, tokens and US dollars at paid prices, and the
-    Cloudflare neurons its paintings cost when it made any."""
+    """What a step's model calls came to (llm.record's lines): calls, tokens and US dollars at paid prices, the
+    Cloudflare neurons its paintings cost when it made any, and reel_art.OUT_OF_NEURONS when Cloudflare refused it."""
     total = {"calls": 0, "tokens": 0, "usd": 0.0}
     for line in usage_log.read_text(encoding="utf-8").splitlines() if usage_log.exists() else []:
         try:
             call = json.loads(line)
         except ValueError:
+            continue
+        if call.get(reel_art.OUT_OF_NEURONS):
+            total[reel_art.OUT_OF_NEURONS] = True
             continue
         total["calls"] += 1
         total["tokens"] += sum(call.get(k) or 0 for k in ("input_tokens", "output_tokens", "thinking_tokens"))
@@ -382,10 +385,13 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
                 os.environ.pop(name, None)
         # Every try counts, failed ones too: they cost the same.
         spent = _spend(usage_log)
+        refused = spent.pop(reel_art.OUT_OF_NEURONS, False)
         _add_spend(mine.setdefault("usage", {}).setdefault(step, {}), spent)
         _add_spend(state.setdefault("spend", {}).setdefault(f"{datetime.now(IST):%Y-%m-%d}", {}), spent)
         if spent.get("neurons"):
             _add_neurons(state, datetime.now(timezone.utc), spent["neurons"])
+        if refused:
+            _add_neurons(state, datetime.now(timezone.utc), _neurons_left(state, datetime.now(timezone.utc)))
         print(f"{reel} {step}: exit {code} after {time.time() - started:.0f} s, {spent['calls']} model calls, "
               f"${spent['usd']:.3f} at paid prices" + (f", {spent['neurons']:.0f} neurons" if spent.get("neurons") else ""),
               flush=True)
@@ -425,6 +431,13 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             transient[step] = transient.get(step, 0) + 1
             done["why"] = f"{step} hit an outage or network error ({transient[step]} of {TRANSIENT_GIVE_UP}): {last}"
             done["transient"] = True
+            return "failed"
+        if step == "rescue" and refused:
+            # It failed for want of the paintings Cloudflare refused, so it goes back among the failed Reels (supply
+            # counts one without "pushed" as half-made), and decide offers it again once the day's neurons are back.
+            rescue = mine.pop("rescue", None) or {}
+            mine["pushed"] = rescue.get("pushed") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+            done["why"] = f"rescue needs paintings Cloudflare refuses until the neurons are back: {last}"
             return "failed"
         # A rescue that can't be done (too few pictures left, a render that fails its checks) won't be done by trying
         # again, and the new stories would wait behind it.
@@ -556,8 +569,8 @@ def work(state_path: Path, logs: Path, force: bool = False, media: Path | None =
             state.setdefault("aside", []).append({"reel": reel, **state["reels"].pop(reel)})
         if done["decision"] == "rescuing":
             mine = state["reels"].setdefault(reel, {})
-            mine.pop("pushed", None)
-            mine.update(fails={}, transient={}, rescue={"at": datetime.now(IST).isoformat(timespec="seconds")})
+            mine.update(fails={}, transient={}, rescue={"at": datetime.now(IST).isoformat(timespec="seconds"),
+                                                        "pushed": mine.pop("pushed", None)})
             mine.setdefault("story", ((_read(reels.REELS / reel / reel_writer.SCRIPT) or {}).get("row") or {}).get(
                 "story", ""))
         if done["decision"] == "picturing again":

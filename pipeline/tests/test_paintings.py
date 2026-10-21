@@ -79,6 +79,14 @@ class PaintLinesTests(unittest.TestCase):
             self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [3, 4])), [3])
             self.assertEqual(reel_art.paint_lines("ak999", self.beats, [5]), {})
 
+    def test_cloudflare_refusing_ends_the_days_share_for_the_factory_too(self) -> None:
+        self.out = {2}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"YTC_USAGE_LOG": f"{tmp}/usage.jsonl"}):
+            self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [1, 2, 3])), [1, 3])
+            self.assertEqual(os.environ["YTC_PAINT_NEURONS"], "0.0")
+            spent = reel_factory._spend(Path(tmp) / "usage.jsonl")
+        self.assertEqual((spent[reel_art.OUT_OF_NEURONS], spent["calls"]), (True, 0))
+
     def test_flagged_paintings_come_off_the_neurons_too(self) -> None:
         costs = {1: (None, 264.0), 2: ({"ref": "ai:ak999-02-1"}, 263.76)}
         reel_art.paint.side_effect = lambda reel, number, beat: costs[number]
@@ -334,6 +342,45 @@ class NeuronTests(unittest.TestCase):
         for day in range(10):
             reel_factory._add_neurons(state, start + timedelta(days=day), 10)
         self.assertEqual(sorted(state["neurons"]), [f"2026-10-{d:02d}" for d in range(4, 11)])
+
+
+class RefusedRescueTests(unittest.TestCase):
+    """A rescue Cloudflare refused the paintings for waits for the neurons; any other failed rescue is set aside."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.logs, self.refuse = Path(tmp.name) / "logs", True
+        (Path(tmp.name) / "content" / "ak902").mkdir(parents=True)
+        for patcher in (
+                patch.object(reels, "REELS", Path(tmp.name) / "content"),
+                patch.object(reel_factory, "_steps", return_value=[("rescue", lambda: False, ["true"], 60)]),
+                patch.object(reel_factory, "_run", side_effect=self._run)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.state = {"reels": {"ak902": {"fails": {}, "transient": {}, "rescue": {
+            "at": "2026-10-21T06:33:00+05:30", "pushed": "2026-10-20T21:35:20+00:00"}}}, "made": {}}
+
+    def _run(self, command, log, timeout):
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("line 2: Cloudflare's free neurons for today are spent\n", encoding="utf-8")
+        if self.refuse:
+            Path(os.environ["YTC_USAGE_LOG"]).write_text(json.dumps(
+                {"model": "cloudflare:refused", reel_art.OUT_OF_NEURONS: True}) + "\n", encoding="utf-8")
+        return 1, "ValueError: only 3 of its pictures weren't faulted; at least 8 are needed"
+
+    def test_a_rescue_cloudflare_refused_waits_among_the_failed_reels(self) -> None:
+        result = reel_factory.make("ak902", self.state, self.logs, {"steps": [], "alerts": []})
+        mine = self.state["reels"]["ak902"]
+        self.assertEqual(result, "failed")
+        self.assertEqual((mine.get("rescue"), mine.get("set_aside"), mine["pushed"]),
+                         (None, None, "2026-10-20T21:35:20+00:00"))
+        self.assertEqual(reel_factory._neurons_left(self.state, datetime.now(timezone.utc)), 0)
+
+    def test_a_rescue_that_fails_for_another_reason_is_set_aside(self) -> None:
+        self.refuse = False
+        self.assertEqual(reel_factory.make("ak902", self.state, self.logs, {"steps": [], "alerts": []}), "set aside")
+        self.assertIn("set_aside", self.state["reels"]["ak902"])
 
 
 class DecideTests(unittest.TestCase):

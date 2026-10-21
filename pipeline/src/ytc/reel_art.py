@@ -85,6 +85,8 @@ MAX_ICONS = 3
 # Cloudflare's safety check flagged all four of ak073's paintings of Rama (21 Oct); a flagged painting is painted
 # again with another seed, up to this many tries in all.
 FLAGGED_TRIES = 2
+# The usage-log key of a step's note that Cloudflare refused it for the day's neurons.
+OUT_OF_NEURONS = "out_of_neurons"
 
 
 class OutOfNeurons(RuntimeError):
@@ -195,10 +197,13 @@ def paint_lines(reel: str, beats: list[dict], numbers: list[int]) -> dict[int, d
         log.info("no painting for lines %s: today's %d neurons are spent", numbers, DAILY_NEURONS)
         return {}
 
+    refused: list[int] = []
+
     def one(number: int) -> tuple[int, dict | None, float]:
         try:
             return number, *paint(reel, number, beats[number - 1])
         except OutOfNeurons as err:
+            refused.append(number)
             log.warning("line %d: Cloudflare's free neurons for today are spent (%s)", number, str(err)[:160])
         except Exception as err:
             log.warning("line %d: no painting (%s: %s)", number, type(err).__name__, str(err)[:200])
@@ -207,6 +212,13 @@ def paint_lines(reel: str, beats: list[dict], numbers: list[int]) -> dict[int, d
     with ThreadPoolExecutor(3) as workers:
         done = list(workers.map(one, todo))
     made = {number: hit for number, hit, _ in done if hit}
-    os.environ["YTC_PAINT_NEURONS"] = str(max(0.0, left - sum(spent for _, _, spent in done)))
+    left -= sum(spent for _, _, spent in done)
+    if refused:
+        # Cloudflare's count says when the day is over, not ours: on 20 Oct it stopped at 6,373 of ours, and it can
+        # go on refusing past 00:00 UTC. reel_factory takes this line as the end of the day's share.
+        llm.record({"model": "cloudflare:refused", "purpose": f"{reel}: Cloudflare refused paintings for the day's "
+                    "neurons", OUT_OF_NEURONS: True})
+        left = 0.0
+    os.environ["YTC_PAINT_NEURONS"] = str(max(0.0, left))
     log.info("painted lines %s of %s", sorted(made), todo)
     return made
