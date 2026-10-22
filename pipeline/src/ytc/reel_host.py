@@ -85,6 +85,12 @@ NEWS_KEEP = ("state/local.json", "state/voice.json", "state/cycles.jsonl", "stat
 NEWS_STATES = 3
 NEWS_MINUTES = 50
 NEWS_HIDE = ("IG_", "AK_", "YTC_DEPLOY_KEY", "YTC_CONTACT", "CIRCLECI_TOKEN")
+# The exam desk (ytc.news.exam): its state and a day's unfinished work, under news/exam, kept as one tar in EXAM_RELEASE
+# ("state-…" for the real desk, "dry-…" for dry runs, which keep a state of their own).
+EXAM_RELEASE = "exam desk"
+EXAM_KEEP = {"state-": ("state/exam.json", "state/takes", "out"), "dry-": ("state/dry.json", "state/takes", "out-dry")}
+EXAM_STATES = 3
+EXAM_SAVE = timedelta(minutes=5)  # the job's time kept after the desk's step, to pack and keep its work
 WATCH_KEYS = ("BUFFER_API_KEY", "BUFFER_YOUTUBE_CHANNEL_ID", "CLOUDINARY_URL", "YTC_NTFY_TOPIC")
 # What the watchdog has already sent; .circleci/config.yml's watchdog job caches this folder between runs.
 WATCH_OUT = Path.home() / "watchdog"
@@ -603,6 +609,80 @@ def news_test_upload(folder: Path, store: reel_media.Store) -> str:
     return packed.name
 
 
+# --- the exam desk -----------------------------------------------------------------------------------------------
+
+def _exam_alert(message: str) -> None:
+    """Push to the owner's phone. The desk runs a few times a morning, so unlike the news desk's, every run's does."""
+    if topic := os.environ.get("YTC_NTFY_TOPIC"):
+        try:
+            requests.post(f"https://ntfy.sh/{topic}", data=message[:900].encode("utf-8"), timeout=30,
+                          headers={"Title": "The exam desk needs attention", "Priority": "high", "Tags": "warning"})
+        except requests.RequestException as err:
+            log.warning("ntfy push failed: %s", err)
+
+
+def _exam_states(store: reel_media.Store, prefix: str) -> list[str]:
+    return sorted((name for name in store.assets(EXAM_RELEASE) if name.startswith(prefix)), reverse=True)
+
+
+def bring_exam(store: reel_media.Store, folder: Path, prefix: str) -> str | None:
+    """Unpack the newest kept exam state into news/exam/; None before the desk's first run."""
+    if not (names := _exam_states(store, prefix)):
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        packed = Path(tmp) / names[0]
+        store.get(EXAM_RELEASE, names[0], packed)
+        with tarfile.open(packed) as tar:
+            tar.extractall(folder, filter="data")
+    return names[0]
+
+
+def keep_exam(store: reel_media.Store, folder: Path, prefix: str) -> str:
+    name = f"{prefix}{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.tar"
+    with tempfile.TemporaryDirectory() as tmp:
+        packed = Path(tmp) / name
+        with tarfile.open(packed, "w") as tar:  # mostly video, audio and photos: compressing saves little
+            for path in EXAM_KEEP[prefix]:
+                if (folder / path).exists():
+                    tar.add(folder / path, arcname=path)
+        store.put(EXAM_RELEASE, name, packed)
+    for old in _exam_states(store, prefix)[EXAM_STATES:]:
+        store.remove(EXAM_RELEASE, old)
+    return name
+
+
+def exam(dry: bool = False, until: datetime | None = None) -> dict:
+    """The exam desk's run (ytc.news.exam run) on the clone, choosing from the news desk's newest state, and carrying on
+    from the exam desk's own kept state, which it keeps again. A dry run uploads nothing to YouTube and carries on from
+    the last dry run's state."""
+    until = until or datetime.now(timezone.utc) + timedelta(minutes=NEWS_MINUTES)
+    folder, prefix = cloud.CHECKOUT / "news", "dry-" if dry else "state-"
+    try:
+        prepare()
+        store = reel_media.Store()
+        news_state = bring_news(store, folder)
+        brought = bring_exam(store, folder / "exam", prefix)
+    except Exception as err:
+        _exam_alert(f"The exam desk's run on CircleCI couldn't start: {err}")
+        raise
+    stop = until - EXAM_SAVE
+    command = [sys.executable, "-m", "ytc.news.exam", "run", "--until", stop.isoformat(), *(["--dry"] if dry else [])]
+    timeout = max(60, int((stop - datetime.now(timezone.utc)).total_seconds()) + 120)
+    code, summary = _step(command, _news_env(), LOGS / "exam.log", timeout)
+    done = {"news_state": news_state, "brought": brought, "exit": code, "summary": summary}
+    _keep_log(store, "exam logs", LOGS / "exam.log")
+    try:
+        done["kept"] = keep_exam(store, folder / "exam", prefix)
+    except Exception as err:
+        _exam_alert(f"The exam desk's run on CircleCI couldn't keep its state, so the next run may repeat its work: "
+                    f"{err}")
+        raise
+    if code:
+        _exam_alert(f"The exam desk's run on CircleCI stopped with exit code {code}; its log is in the "
+                    f'"exam logs" draft release of {reel_media.REPO}.')
+    return done
+
+
 # --- Days of Odd's watchdog --------------------------------------------------------------------------------------
 
 def _watch_alert(message: str) -> None:
@@ -699,6 +779,9 @@ def main() -> None:
     desk = commands.add_parser("news", help="one cycle of the news desk")
     desk.add_argument("--dry", action="store_true", help="post nothing and keep no state")
     desk.add_argument("--test", action="store_true", help="render the kept test Short instead, with no Gemini call")
+    exams = commands.add_parser("exam", help="the exam desk's run: the day's current-affairs bulletin and Shorts")
+    exams.add_argument("--dry", action="store_true", help="upload nothing to YouTube, in a state of its own")
+    exams.add_argument("--until", type=datetime.fromisoformat, help="the job's last moment")
     commands.add_parser("watchdog", help="Days of Odd's monitor, alerting the owner's phone")
     growing = commands.add_parser("growth", help="the growth desk: read every post's numbers and steer what's made")
     growing.add_argument("--dry", action="store_true", help="decide but change nothing")
@@ -739,6 +822,8 @@ def main() -> None:
         result = factory(args.force, args.until)
     elif args.command == "news":
         result = news_test() if args.test else news(args.dry)
+    elif args.command == "exam":
+        result = exam(args.dry, args.until)
     elif args.command == "watchdog":
         result = watchdog()
     elif args.command == "growth":

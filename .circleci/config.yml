@@ -2,14 +2,15 @@ version: 2.1
 
 # @ankahi.kathayein's Reels (pipeline/src/ytc/reel_host.py). The project's two schedules set `run`: "reels" at 15
 # past every hour, "factory" at 40 past. A third, "news", runs a cycle of the owner's news desk every quarter of an
-# hour, with the keys of the "news-desk" context. A fourth, "watchdog", checks Days of Odd's studio every 3 hours,
-# with the keys of the "days-of-odd" context. The Reels' growth desk runs at the end of the factory job every 6 hours;
-# `run: growth` starts it by hand. A push (the copy from the private repo) runs nothing.
+# hour, with the keys of the "news-desk" context; "exam", with the same keys, makes the news desk's daily
+# current-affairs bulletin and its Shorts in a few runs each early morning. A fifth, "watchdog", checks Days of Odd's
+# studio every 3 hours, with the keys of the "days-of-odd" context. The Reels' growth desk runs at the end of the
+# factory job every 6 hours; `run: growth` starts it by hand. A push (the copy from the private repo) runs nothing.
 
 parameters:
   run:
     type: enum
-    enum: [none, reels, factory, selftest, news, newstest, watchdog, growth]
+    enum: [none, reels, factory, selftest, news, newstest, exam, watchdog, growth]
     default: none
   dry:
     type: boolean
@@ -148,6 +149,27 @@ jobs:
           working_directory: pipeline
           no_output_timeout: 55m
           command: .venv/bin/python -m ytc.reel_host news --test
+  exam:
+    executor: browsers
+    resource_class: medium+
+    steps:
+      - install
+      - when:
+          condition: << pipeline.parameters.dry >>
+          steps:
+            - run:
+                name: An exam desk run that uploads nothing to YouTube, in a state of its own
+                working_directory: pipeline
+                no_output_timeout: 55m
+                command: .venv/bin/python -m ytc.reel_host exam --dry --until "$AK_UNTIL"
+      - unless:
+          condition: << pipeline.parameters.dry >>
+          steps:
+            - run:
+                name: The exam desk's run
+                working_directory: pipeline
+                no_output_timeout: 55m
+                command: .venv/bin/python -m ytc.reel_host exam --until "$AK_UNTIL"
   watchdog:
     executor: python
     resource_class: small
@@ -220,6 +242,13 @@ workflows:
     jobs:
       - newstest:
           context: news-desk
+  exam:
+    when:
+      equal: [exam, << pipeline.parameters.run >>]
+    jobs:
+      - exam:
+          context: news-desk
+          serial-group: ytc-pipeline/exam
   watchdog:
     when:
       equal: [watchdog, << pipeline.parameters.run >>]
