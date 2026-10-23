@@ -99,7 +99,9 @@ Score each 1 to 10 (10 exceptional, 8 strong, 7 publishable, 6 or lower must be 
   mispronounced word, odd pause, flat or robotic moment.
 - visuals: is every frame on-topic, sharp at phone size, striking, and different from the others? Pictures credited
   as made with AI were painted for their lines: judge whether each shows its line's moment, whether a figure looks
-  the same from line to line, and mark down distorted faces or hands and stray letters, not the style. Instagram
+  the same from line to line, and mark down distorted faces or hands and stray letters, not the style. A frame with
+  blood, a wound, a dead, cut or broken body or parts of one, or the sign of another faith (a cross), makes visuals
+  at most 3; list it in frames. Instagram
   won't monetize "content that primarily displays static images played in succession": going by each line's shots,
   does the Reel move like film, or is it a slideshow?
 - accuracy: is every claim faithful to the named sources, respectful to the deities and traditions, free of

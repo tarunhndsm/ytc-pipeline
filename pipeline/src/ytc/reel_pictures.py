@@ -391,8 +391,10 @@ the Puranas, told in Hindi. For each one:
 # Devanagari on three of ak037's four (20 Oct), "no text" in the prompt notwithstanding.
 PAINTED_RULES = """
 These pictures are new paintings, not museum pictures: ok is also false for any letters or script painted on one (a
-caption, a label, an inscription, a signature), even small ones, and for a face or body painted wrong (melted or
-doubled features, extra fingers, arms or legs where the figure has none). However lifelike, their kind is painting.
+caption, a label, an inscription, a signature), even small ones, for a face or body painted wrong (melted or
+doubled features, extra fingers, arms or legs where the figure has none), for blood, a wound, a dead, cut or broken
+body or parts of one, and for the sign of another faith (a cross, a crescent and star). However lifelike, their kind
+is painting.
 """
 PAINT_TRIES = 2
 

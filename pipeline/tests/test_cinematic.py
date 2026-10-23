@@ -138,6 +138,12 @@ class HookTests(unittest.TestCase):
             self.assertIn("close up", reel_writer.PAINTED_PICTURES)
             self.assertNotIn("museum", reel_writer.PAINTED_PICTURES.lower())
 
+    def test_no_picture_shows_a_broken_body_from_brief_to_judge(self) -> None:
+        # ak086 (23 Oct) was painted with the two halves of Jarasandha lying at a crossroads.
+        for text in (reel_writer.PAINTED_PICTURES, reel_pictures.PAINTED_RULES, reels.REVIEW_PROMPT):
+            self.assertIn("a dead, cut or broken body", " ".join(text.split()))
+        self.assertIn("at most 3", " ".join(reels.REVIEW_PROMPT.split()))
+
 
 if __name__ == "__main__":
     unittest.main()

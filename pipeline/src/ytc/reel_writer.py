@@ -229,6 +229,9 @@ PAINTED_PICTURES = """The pictures (each line's is painted for it later, from wh
   figures, nothing modern and no writing. Name each figure in every picture they are in, never "he" or "the sage",
   so they look the same from line to line. Line 1's picture is the first frame in the feed: the figure line 1 names,
   close up, with the strongest feeling of the story (awe, fear, fury, shock), never a landscape on its own.
+- Never in a picture: blood, a wound, a dead, cut or broken body, or parts of one. Show such a moment through the
+  faces of those who see it, and what the text says is hidden as closed cloth bundles.
+- Name no style of art ("traditional", "classical", "miniature"): every picture is painted in one style later.
 - search: 2 to 4 short English terms, the names first, then the scene (Krishna, Kaliya, Yamuna)."""
 
 # PROMPT's {quiz} while the quiz is on.

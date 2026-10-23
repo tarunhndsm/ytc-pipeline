@@ -72,6 +72,8 @@ SCHOOL = re.compile(r"(?:\b(?:in|like)\s+)?(?:\b(?:the|an?)\s+)?(?:\b(?:traditio
                     r"(?:(?:Pahari|Rajasthani|Kangra|Mewar|Basohli|Guler|"
                     r"Mughal|Kalighat|Indian)\s+(?:miniature\s+)?|miniature\s+)(?:paintings?|folios?|style)"
                     r"(?:\s+(?:of|showing|depicting))?\b\s*", re.I)
+# A clause of a brief that names a style ("traditional Indian art style", "classical painting"); reel_art.plain.
+STYLED = re.compile(r"\b(?:style|miniature|folio)\b|\b(?:painting|art)\s*$", re.I)
 # Line 1's picture is the Reel's first frame in the feed (reel_pictures.CHOOSE_PROMPT).
 FIRST = ("A dramatic close-up: the main figure's face and shoulders fill most of the frame, the emotion unmistakable, "
          "vivid and striking at phone size. " if CINEMATIC else
@@ -93,7 +95,10 @@ ICONS = (
     (r"\bs(h)?iva\b|\bmahadeva\b", "Shiva has pale ash-smeared skin, matted locks with the crescent moon, a snake at "
                                    "his neck and a trident"),
     (r"\bbalarama\b", "Balarama has fair skin, blue garments and a plough"),
-    (r"\bhanuman\b", "Hanuman is a monkey god with a mace"),
+    # "A monkey god" came out as a bearded man or a real ape, flagged on most tries (ak087, 23 Oct).
+    (r"\bhanuman(ji)?\b|\bhanumat\b|\bmaruti\b|\banjaneya\b|\bbajrang(bali)?\b",
+     "Hanuman, the vanara god, has a monkey's face with golden-orange fur, a long tail, a golden crown and a mace, "
+     "and wears a red dhoti and golden armour over his chest"),
     (r"\bganesh(a)?\b|\bganapati\b", "Ganesha has an elephant's head"),
     (r"\byama(raja?)?\b", "Yama, god of death, is dark-skinned and crowned, with a mace and a noose"),
     (r"\bbrahma\b", "Brahma has four bearded heads"),
@@ -138,10 +143,19 @@ def icons(brief: str) -> str:
     return "".join(f"{text[0].upper()}{text[1:]}. " for _, text in found[:MAX_ICONS])
 
 
+def plain(brief: str) -> str:
+    """The brief without the school or style of painting it names, as a clause of its own ("..., traditional Indian
+    art style") or in front ("Pahari painting of ...")."""
+    brief = SCHOOL.sub("", brief).strip(" ,.")
+    kept = [part.strip() for part in brief.split(",") if part.strip() and not STYLED.search(part)]
+    found = ", ".join(kept) if kept else brief
+    return found[:1].upper() + found[1:]
+
+
 def prompt(beat: dict, first: bool = False) -> str:
     brief = beat["picture"].strip().rstrip(".")
-    if CINEMATIC and (plain := SCHOOL.sub("", brief).strip(" ,.")):
-        brief = plain[0].upper() + plain[1:]
+    if CINEMATIC and plain(brief):
+        brief = plain(brief)
     return f"{brief}. {FIRST if first else ''}{icons(brief)}{STYLE}"[:2000]
 
 

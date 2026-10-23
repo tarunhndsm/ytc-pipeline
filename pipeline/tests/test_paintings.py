@@ -204,6 +204,8 @@ class PaintTests(unittest.TestCase):
                          "locks with the crescent moon, a snake at his neck and a trident. Brahma has four bearded "
                          "heads. Vishnu has blue skin, yellow robes and four arms holding a conch, a discus, a mace and "
                          "a lotus. ")
+        for name in ("Hanuman", "Hanumanji", "Bajrangbali", "Anjaneya"):
+            self.assertIn("monkey's face with golden-orange fur, a long tail", reel_art.icons(f"{name} leaps to Lanka"))
 
     def test_line_1_asks_for_a_close_vivid_figure_and_every_line_for_the_style(self) -> None:
         first, other = (reel_art.prompt({"picture": "Kunti at the river."}, n == 1) for n in (1, 2))
@@ -219,6 +221,15 @@ class PaintTests(unittest.TestCase):
                 self.assertTrue(reel_art.prompt({"picture": brief}).startswith("Kunti at the river. "), brief)
             self.assertTrue(reel_art.prompt({"picture": "Indian king Pandu in a forest"}).startswith(
                 "Indian king Pandu in a forest. "))
+            # As ak086's writer gave them (23 Oct), every brief ending in a style.
+            for brief, left in (("Close-up of King Vrihadratha in shock at two cloth bundles, warm torchlight, "
+                                 "traditional Indian classical painting style.", "Close-up of King Vrihadratha in shock "
+                                 "at two cloth bundles, warm torchlight. "),
+                                ("The two queens of Kasi sharing a mango, hopeful expressions, traditional Indian art "
+                                 "style", "The two queens of Kasi sharing a mango, hopeful expressions. "),
+                                ("Sage Chanda-kausika under a mango tree, classical Indian painting",
+                                 "Sage Chanda-kausika under a mango tree. ")):
+                self.assertTrue(reel_art.prompt({"picture": brief}).startswith(left), brief)
         self.assertIn("never a crown", reel_art.prompt({"picture": "Sage Durvasa blesses young Kunti"}))
 
 
