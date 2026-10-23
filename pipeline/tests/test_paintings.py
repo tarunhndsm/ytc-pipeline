@@ -57,8 +57,10 @@ class PaintLinesTests(unittest.TestCase):
         reel_art.paint.assert_not_called()
 
     def test_a_try_paints_at_most_max_painted_lines_the_most_needed_first(self) -> None:
-        made = reel_art.paint_lines("ak999", self.beats, list(range(12, 0, -1)))
-        self.assertEqual(sorted(made), list(range(12, 12 - reel_art.MAX_PAINTED, -1))[::-1])
+        count = reel_art.MAX_PAINTED + 3
+        beats = [{"text": f"line {n}", "picture": f"brief {n}"} for n in range(1, count + 1)]
+        made = reel_art.paint_lines("ak999", beats, list(range(count, 0, -1)))
+        self.assertEqual(sorted(made), list(range(count - reel_art.MAX_PAINTED + 1, count + 1)))
 
     def test_the_neurons_left_today_limit_the_paintings(self) -> None:
         with patch.dict(os.environ, {"YTC_PAINT_NEURONS": str(2 * reel_art.NEURONS_EACH + 30)}):
@@ -192,7 +194,8 @@ class PaintTests(unittest.TestCase):
         self.assertEqual((str(refused.exception), refused.exception.neurons), ("HTTP 400: AiError: Bad input", 0.0))
 
     def test_the_figures_a_brief_names_are_painted_as_the_old_paintings_show_them(self) -> None:
-        text = reel_art.prompt({"picture": "Pahari painting of Yamaraja bowing deeply before Krishna and Balarama."})
+        with patch.object(reel_art, "CINEMATIC", False):
+            text = reel_art.prompt({"picture": "Pahari painting of Yamaraja bowing deeply before Krishna and Balarama."})
         self.assertTrue(text.startswith("Pahari painting of Yamaraja bowing deeply before Krishna and Balarama. "
                                         "Yama, god of death, is dark-skinned"))
         self.assertLess(text.index("Krishna has blue skin"), text.index("Balarama has fair skin"))
@@ -204,9 +207,18 @@ class PaintTests(unittest.TestCase):
 
     def test_line_1_asks_for_a_close_vivid_figure_and_every_line_for_the_style(self) -> None:
         first, other = (reel_art.prompt({"picture": "Kunti at the river."}, n == 1) for n in (1, 2))
-        self.assertTrue(first.startswith("Kunti at the river. The figure large and close"))
-        self.assertTrue(other.startswith("Kunti at the river. Indian miniature painting"))
+        self.assertTrue(first.startswith("Kunti at the river. " + reel_art.FIRST))
+        self.assertTrue(other.startswith("Kunti at the river. " + reel_art.STYLE))
+        self.assertIn("close", reel_art.FIRST)
         self.assertNotIn("Sages", other)
+
+    def test_painted_line_by_line_a_brief_loses_the_school_of_painting_it_names(self) -> None:
+        with patch.object(reel_art, "CINEMATIC", True):
+            for brief in ("Pahari painting of Kunti at the river.", "A Kangra miniature painting showing Kunti at the river",
+                          "Kunti at the river, in Pahari style", "miniature painting of Kunti at the river"):
+                self.assertTrue(reel_art.prompt({"picture": brief}).startswith("Kunti at the river. "), brief)
+            self.assertTrue(reel_art.prompt({"picture": "Indian king Pandu in a forest"}).startswith(
+                "Indian king Pandu in a forest. "))
         self.assertIn("never a crown", reel_art.prompt({"picture": "Sage Durvasa blesses young Kunti"}))
 
 

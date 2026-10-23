@@ -391,7 +391,8 @@ the Puranas, told in Hindi. For each one:
 # Devanagari on three of ak037's four (20 Oct), "no text" in the prompt notwithstanding.
 PAINTED_RULES = """
 These pictures are new paintings, not museum pictures: ok is also false for any letters or script painted on one (a
-caption, a label, an inscription, a signature), even small ones.
+caption, a label, an inscription, a signature), even small ones, and for a face or body painted wrong (melted or
+doubled features, extra fingers, arms or legs where the figure has none). However lifelike, their kind is painting.
 """
 PAINT_TRIES = 2
 
@@ -655,13 +656,15 @@ def frame_all(beats: list[dict], ranked: dict[int, list[dict]], shown: dict[int,
         for number, hit in trial.items():
             item = looked.get(number) or {}
             stranger = no_vanaras and item.get("vanaras")
-            # Judges mark a Reel down for a photograph among its paintings, even where the prompt let one through.
-            if (item.get("ok") and item["kind"] != "photo" and not stranger and (subject := _box(item["subject"]))
+            # Judges mark a Reel down for a photograph among its paintings, even where the prompt let one through;
+            # a lifelike painting of our own (reel_art) isn't one.
+            kind = "painting" if hit["ref"].startswith("ai:") else item.get("kind")
+            if (item.get("ok") and kind != "photo" and not stranger and (subject := _box(item["subject"]))
                     and "size" in hit):
                 chosen[number] = hit | {"subject": subject, "faces": [f for f in map(_box, item["faces"]) if f],
-                                        "kind": item["kind"], "hindi": item["hindi"].strip()}
+                                        "kind": kind, "hindi": item["hindi"].strip()}
             else:
-                why = item.get("problem") or ("a photograph" if item.get("kind") == "photo" else
+                why = item.get("problem") or ("a photograph" if kind == "photo" else
                                               "shows vanaras, whom this story doesn't name" if stranger else
                                               "not framed")
                 log.info("line %d: %s set aside (%s)", number, hit["ref"], why)
@@ -925,9 +928,35 @@ def paint_framed(reel: str, beats: list[dict], lines: list[int]) -> dict[int, di
     return framed
 
 
+def all_painted(folder: Path) -> bool:
+    """Whether every picture the Reel in `folder` shows was painted for it, as reel_art.CINEMATIC has them."""
+    try:
+        pictures = json.loads((folder / PICTURES).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(pictures) and all(hit.get("license") == reel_art.LICENSE for hit in pictures.values())
+
+
+def cinematic(folder: Path, draft: dict, avoid: set[str]) -> Path:
+    """Every line its own painting (reel_art.CINEMATIC), keeping those an earlier try accepted; no museum search."""
+    beats = draft["script"]["beats"]
+    kept = {n: hit for n, hit in kept_picks(folder, beats, avoid).items() if hit["ref"].startswith("ai:")}
+    if kept:
+        log.info("kept the paintings an earlier try accepted for lines %s", sorted(kept))
+    todo = [n for n in own_lines(beats) if n not in kept]
+    with reel_writer.gemini_only():
+        chosen = kept | paint_framed(draft["id"], beats, sorted(todo, key=lambda n: (n != 1, n)))
+    return lay_out(folder, draft, chosen, {}, {})
+
+
 def picture(folder: Path) -> Path:
     """Choose and frame every picture for the Reel in `folder` and write its short.yaml."""
     draft = json.loads((folder / reel_writer.SCRIPT).read_text(encoding="utf-8"))
+    avoid: set[str] = set()
+    if (folder / AVOID).exists():
+        avoid = set(json.loads((folder / AVOID).read_text(encoding="utf-8"))["refs"])
+    if reel_art.CINEMATIC and reel_art.ready():
+        return cinematic(folder, draft, avoid)
     beats = draft["script"]["beats"]
     story = f"{draft['row']['story']} ({draft['row']['source']})"
     per_line = candidates(beats)
@@ -935,9 +964,7 @@ def picture(folder: Path) -> Path:
     if elsewhere := {h["ref"] for hits in per_line.values() for h in hits if other_story(h.get("title") or "", named)}:
         per_line = {n: [h for h in hits if h["ref"] not in elsewhere] for n, hits in per_line.items()}
         log.info("left out %d pictures whose titles name other stories' people", len(elsewhere))
-    avoid: set[str] = set()
-    if (folder / AVOID).exists():
-        avoid = set(json.loads((folder / AVOID).read_text(encoding="utf-8"))["refs"])
+    if avoid:
         per_line = {n: [h for h in hits if h["ref"] not in avoid] for n, hits in per_line.items()}
         log.info("left out %d pictures the judge found fault with", len(avoid))
     if kept := {n: hit for n, hit in kept_picks(folder, beats, avoid).items()
@@ -955,6 +982,14 @@ def picture(folder: Path) -> Path:
         ranked = choose(beats, todo, story, f"{draft['id']} pictures", fits) if todo else {}
         chosen = kept | frame_all(beats, ranked, todo, f"{draft['id']} framing", named=named)
         chosen |= painted(draft["id"], beats, chosen, fits)
+    return lay_out(folder, draft, chosen, ranked, shown)
+
+
+def lay_out(folder: Path, draft: dict, chosen: dict[int, dict], ranked: dict[int, list[dict]],
+            shown: dict[int, list[dict]]) -> Path:
+    """Place the chosen pictures, show earlier ones again on up to MAX_REUSED lines without one, and write
+    short.yaml; too few, and the accepted ones are kept for the story's next try."""
+    beats = draft["script"]["beats"]
     accepted = dict(chosen)
     if 1 not in chosen and chosen:
         # The hook can't go without a picture: it takes the next line's, which then shows it again.

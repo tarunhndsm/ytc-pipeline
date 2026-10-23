@@ -178,6 +178,9 @@ def supply(state: dict, now: datetime, media: Path | None = None, stored: set[st
             if not record.get("withdrawn") and (when := _due(record)) and when > now:
                 found["booked"].append(folder.name)
             continue
+        # Only Reels painted line by line are booked now (reel_cloud), so the others are neither waiting nor rescued.
+        if reel_art.CINEMATIC and not reel_pictures.all_painted(folder):
+            continue
         if _judged_and_failed(folder):
             found["failed"].append(folder.name)
         elif media and not (media / folder.name / f"{folder.name}.mp4").exists():

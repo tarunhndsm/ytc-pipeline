@@ -257,6 +257,26 @@ def schedule(spec_path: Path, when: datetime, note: dict | None = None) -> dict:
     return record
 
 
+def withdraw(folder: Path, why: str) -> dict:
+    """Take a scheduled Reel off Instagram: its Buffer post goes, and instagram.json says so, so it isn't booked
+    again. Its video stays hosted, for its Facebook and YouTube posts."""
+    record = json.loads((folder / RECORD).read_text(encoding="utf-8"))
+    mutation = """
+    mutation Delete($input: DeletePostInput!) {
+      deletePost(input: $input) {
+        __typename
+        ... on VoidMutationError { message }
+      }
+    }"""
+    result = _buffer(mutation, {"input": {"id": record["id"]}})["deletePost"]
+    if result["__typename"] != "DeletePostSuccess":
+        raise RuntimeError(f"Buffer wouldn't delete {folder.name}'s post: {result.get('message')}")
+    record |= {"withdrawn": datetime.now(timezone.utc).isoformat(timespec="seconds"), "withdrawn_why": why}
+    (folder / RECORD).write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+    log.info("took %s off Instagram: %s", folder.name, why)
+    return record
+
+
 def _short(spec: ShortSpec, media_url: str, due: str) -> dict:
     """The whole YouTube post: Buffer's editPost replaces a post rather than patching it."""
     return {"text": youtube_text(spec), "schedulingType": "automatic", "mode": "customScheduled", "dueAt": due,

@@ -100,6 +100,8 @@ ALERT_FROM = 12
 QUEUE = 10
 # A slot sooner than this is left alone: hosting the video and handing it to Buffer takes minutes.
 LEAD = timedelta(minutes=30)
+# An older Reel's booking this soon stays when a Reel painted line by line could take it (old_booking).
+SWAP_LEAD = timedelta(hours=1)
 # Reels Instagram had before the Facebook mirror began go to the Page as well (owner, 7 Oct: the same Reels on both).
 # The catch-up books them before the mirror runs, at these times on days under the mirror's Reels-a-day cap, and
 # leaves queue room for the Instagram Reels due within CATCH_UP_RESERVE, which the mirror places at Instagram's time.
@@ -650,6 +652,45 @@ def spread(now: datetime, done: dict, planned: list[datetime], dry: bool = False
         planned.append(slot)
 
 
+def old_booking(now: datetime, skip: set[str]) -> tuple[Path, datetime] | None:
+    """The soonest Reel due on Instagram more than SWAP_LEAD from now that isn't painted line by line, and when: with
+    reel_art.CINEMATIC a Reel that is takes its slot."""
+    from . import reel_pictures, reels
+
+    booked = [(due, folder) for folder in reels.REELS.glob("ak*") if folder.is_dir() and folder.name not in skip
+              and (due := _due(folder)) and due > now + SWAP_LEAD and not reel_pictures.all_painted(folder)]
+    if not booked:
+        return None
+    due, folder = min(booked)
+    return folder, due
+
+
+def swap_for(reel: str, now: datetime, done: dict, swapped: set[str], slots: list[datetime],
+             dry: bool = False) -> datetime | None:
+    """With reel_art.CINEMATIC, the slot of the soonest older Reel booked (old_booking) when it comes before `slots`,
+    taken off Instagram for `reel`, a Reel painted line by line; None when there is none or taking it off failed.
+    Buffer being busy is raised."""
+    from . import instagram, publish, reel_art
+
+    if not reel_art.CINEMATIC or not (old := old_booking(now, swapped)) or (slots and slots[0] <= old[1]):
+        return None
+    folder, due = old
+    swapped.add(folder.name)
+    if not dry:
+        try:
+            instagram.withdraw(folder, f"{reel}, painted line by line, takes its slot")
+        except publish.BufferBusy:
+            raise
+        except Exception as err:
+            log.exception("taking %s off Instagram failed", folder.name)
+            done["errors"].append(f"taking {folder.name} off Instagram for {reel} failed: {err}"[:300])
+            return None
+    slot = due.astimezone(IST)
+    done["moved"][folder.name] = (f"{'would be taken' if dry else 'taken'} off Instagram's {slot:%a %d %b %H:%M} IST "
+                                  f"for {reel}, whose every line is painted")
+    return slot
+
+
 def free_slots(now: datetime, count: int, planned: list[datetime] | None = None,
                after: datetime | None = None) -> list[datetime]:
     """The Instagram slots the next `count` Reels take, from LEAD after `now`: the evening of the soonest day up to
@@ -688,11 +729,13 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
     more than a Reel under the recent ones' mean. Their records say so, and they don't count toward the bar. After
     them come the Reels rescued without the pictures the judge faulted (reel_rescue), best first. Reels of the quiz
     chain keep its order (`chain`: work's booked, gone and unsent)."""
-    from . import instagram, publish, reel_rescue, reels
+    from . import instagram, publish, reel_art, reel_pictures, reel_rescue, reels
 
     def rank(folder: Path) -> tuple[int, float] | None:
         if (folder / instagram.RECORD).exists() or folder.name in done["scheduled"] or \
                 folder.name in chain["unsent"] or not (folder / f"{folder.name}.mp4").exists():
+            return None
+        if reel_art.CINEMATIC and not reel_pictures.all_painted(folder):
             return None
         rescued = bool(reels.rescued(folder))
         if reel_rescue.unshippable(folder) if rescued else reels.unshippable(folder, with_bar=False):
@@ -700,20 +743,34 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
         return int(rescued), -reels._read(folder / reels.REVIEW)["total"]
 
     chain = chain or {"booked": {}, "gone": set(), "unsent": set()}
+    chain.setdefault("swapped", set())
     held = sorted((key, folder) for folder in sorted(p.parent for p in reels.REELS.glob("ak*/short.yaml"))
                   if (key := rank(folder)))
     for (rescued, minus_total), folder in held:
         total = -minus_total
-        if len({d for d in _dues() if d > now} | set(planned)) >= QUEUE:
-            return
+        full = len({d for d in _dues() if d > now} | set(planned)) >= QUEUE
         after, why = _after(folder, chain["booked"], chain["gone"])
         if why:
+            if full:
+                return
             continue
-        if not (slots := free_slots(now, 1, planned, after)):
+        slots = [] if full else free_slots(now, 1, planned, after)
+        try:
+            swap = swap_for(folder.name, now, done, chain["swapped"], slots, dry) if after is None else None
+        except publish.BufferBusy as err:
+            done["held"][folder.name] = f"would fill the queue; Buffer is busy ({err})"
+            return
+        if swap:
+            slot = swap
+        elif full:
+            return
+        elif not slots:
             if after is None:
                 return
             continue
-        slot, bar = slots[0], reels.bar(folder.name)
+        else:
+            slot = slots[0]
+        bar = reels.bar(folder.name)
         note = {"below_bar": bar} | ({"rescue": reel_rescue.note(folder)} if rescued else {})
         if not dry:
             try:
@@ -903,7 +960,7 @@ def unhost_sent(now: datetime, done: dict, dry: bool = False) -> None:
 
 def work(dry: bool = False) -> dict:
     """Review each rendered Reel still missing judgments and schedule the ones that pass, in id order."""
-    from . import instagram, llm, publish, reel_repost, reel_rescue, reels
+    from . import instagram, llm, publish, reel_art, reel_pictures, reel_repost, reel_rescue, reels
 
     now = datetime.now(timezone.utc)
     done: dict = {"reviewed": {}, "scheduled": {}, "mirrored": {}, "facebook": {}, "moved": {}, "held": {},
@@ -926,7 +983,7 @@ def work(dry: bool = False) -> dict:
     # The quiz chain: each Reel goes out after the one whose question it answers (booked: this run's slots), even
     # below the bar; a Reel whose question no Reel will answer stays (unsent), and one that can't go out is gone.
     needed = {before for path in reels.REELS.glob("ak*/short.yaml") if (before := _answers(path.parent))}
-    chain: dict = {"booked": {}, "gone": set(), "unsent": unanswered()}
+    chain: dict = {"booked": {}, "gone": set(), "unsent": unanswered(), "swapped": set()}
     for spec_path in sorted(reels.REELS.glob("ak*/short.yaml")):
         folder = spec_path.parent
         reel = folder.name
@@ -936,6 +993,8 @@ def work(dry: bool = False) -> dict:
             if not dry:
                 instagram.adopt(folder, post)
             done["scheduled"][reel] = f"{_ist(post['dueAt'])} (already in Buffer)"
+            continue
+        if reel_art.CINEMATIC and not reel_pictures.all_painted(folder):
             continue
         if not (folder / f"{reel}.mp4").exists():
             done["held"][reel] = "its render isn't in the reels volume"
@@ -985,13 +1044,24 @@ def work(dry: bool = False) -> dict:
         if why:
             done["held"][reel] = f"passed; {why}"
             continue
-        if not scheduling or len({d for d in _dues() if d > now} | set(planned)) >= QUEUE:
+        full = len({d for d in _dues() if d > now} | set(planned)) >= QUEUE
+        slots = free_slots(now, 1, planned, after) if scheduling and not full else []
+        try:
+            swap = swap_for(reel, now, done, chain["swapped"], slots, dry) if scheduling and after is None else None
+        except publish.BufferBusy as err:
+            scheduling = False
+            done["held"][reel] = f"passed; Buffer is busy ({err})"
+            continue
+        if swap:
+            slot = swap
+        elif not scheduling or full:
             done["held"][reel] = "passed; waiting for room in the queue"
             continue
-        if not (slots := free_slots(now, 1, planned, after)):
+        elif not slots:
             done["held"][reel] = f"passed; the next {COVER_DAYS} days have their Reels"
             continue
-        slot = slots[0]
+        else:
+            slot = slots[0]
         planned.append(slot)
         chain["booked"][reel] = slot
         below = ((f", {reel_rescue.told(folder)}," if "rescue" in note else f", below the bar ({note['below_bar']})")

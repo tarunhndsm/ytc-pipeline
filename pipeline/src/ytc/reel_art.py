@@ -8,6 +8,8 @@ a day, renewed at 00:00 UTC and shared with the news desk; a painting costs abou
 hosted on Cloudinary like the Reels' videos, so every render, QA swap and rescue fetches it like a museum
 picture, and it goes through the same framing check. Its credit says it was made with AI; the Reels already carry
 the platforms' AI label (synthetic_media).
+
+With CINEMATIC every line is painted, in the look of the niche's most-watched Shorts, and the museums aren't searched.
 """
 
 from __future__ import annotations
@@ -32,8 +34,13 @@ log = logging.getLogger(__name__)
 WIDTH, HEIGHT = 864, 1536
 # Not FLUX.1 [schnell]: it paints only 1,024 squares, which the picture step turns down (reel_pictures.MIN_HEIGHT).
 MODELS = {"@cf/black-forest-labs/flux-2-klein-4b": "FLUX.2 klein"}
+# Every line of a Reel gets a painting of its own (owner, 23 Oct: apply every strategy that makes Reels go viral). The
+# 104 most-viewed Hindi mythology Shorts of 13 to 23 Oct are vivid, film-like paintings with close, emotional faces; ours,
+# crops of old miniatures with small figures and cards on a blurred ground, held viewers 12 to 16 seconds, and no Reel
+# since 13 Oct passed 5,000 plays. Off, paintings stand in only where the museums have no picture.
+CINEMATIC = True
 # Paintings a picture try may make; a Reel has 12 to 15 lines.
-MAX_PAINTED = 8
+MAX_PAINTED = 15 if CINEMATIC else 8
 # Ankahi's share of the account's 10,000 free neurons a day (UTC); the rest stays for the news desk's text fallback.
 # The factory passes what is left of it to the step (YTC_PAINT_NEURONS). A painting at WIDTH x HEIGHT cost 131.88
 # on 20 Oct (Cloudflare's cf-ai-neurons header).
@@ -47,13 +54,28 @@ LICENSE = "AI-generated"
 CLOUDINARY_FOLDER = "ankahikathayein/art"
 # Not the museums' words for the paintings ("opaque watercolour on paper"): they bring the catalogue's margins with
 # them, and FLUX writes a made-up caption there.
-STYLE = ("Indian miniature painting in the Pahari style: fine brushwork, flat perspective, rich natural pigments, "
-         "every figure fully clothed in traditional Indian dress, Hindu iconography as in the old paintings. Only "
-         "the figures the brief names, each large and clear. The painted scene fills the whole tall vertical picture "
-         "edge to edge, with no margin, border or frame, and no writing anywhere: no inscription, caption, label or "
-         "signature.")
+MINIATURE = ("Indian miniature painting in the Pahari style: fine brushwork, flat perspective, rich natural pigments, "
+             "every figure fully clothed in traditional Indian dress, Hindu iconography as in the old paintings. Only "
+             "the figures the brief names, each large and clear. The painted scene fills the whole tall vertical "
+             "picture edge to edge, with no margin, border or frame, and no writing anywhere: no inscription, caption, "
+             "label or signature.")
+CINEMA = ("Cinematic digital painting, like a frame from an epic Indian mythological film: dramatic light with glowing "
+          "golds and deep shadows, rich saturated colours, fine detail, expressive faces with clear emotion. Every "
+          "figure fully clothed in traditional Indian dress and jewellery, Hindu iconography as in temple art. Only "
+          "the figures the brief names, each large and clear. The scene fills the whole tall vertical picture edge to "
+          "edge, with no margin, border or frame, and no writing anywhere: no text, letters, caption, label, logo or "
+          "signature.")
+STYLE = CINEMA if CINEMATIC else MINIATURE
+# A brief written for the museums' pictures names a school of painting ("Pahari painting of ..."), which would undo
+# CINEMA.
+SCHOOL = re.compile(r"(?:\b(?:in|like)\s+)?(?:\b(?:the|an?)\s+)?(?:\b(?:traditional|classical|old)\s+)?\b"
+                    r"(?:(?:Pahari|Rajasthani|Kangra|Mewar|Basohli|Guler|"
+                    r"Mughal|Kalighat|Indian)\s+(?:miniature\s+)?|miniature\s+)(?:paintings?|folios?|style)"
+                    r"(?:\s+(?:of|showing|depicting))?\b\s*", re.I)
 # Line 1's picture is the Reel's first frame in the feed (reel_pictures.CHOOSE_PROMPT).
-FIRST = "The figure large and close, vivid and colourful, clear at phone size. "
+FIRST = ("A dramatic close-up: the main figure's face and shoulders fill most of the frame, the emotion unmistakable, "
+         "vivid and striking at phone size. " if CINEMATIC else
+         "The figure large and close, vivid and colourful, clear at phone size. ")
 # How the old paintings show the figures a brief names, at most MAX_ICONS of them: the briefs give only the name, and
 # FLUX painted Krishna pale and Yama as a sage (ak072, 20 Oct). Only for a brief that names them: said of every line,
 # the sages filled every painting with a crowd of them (ak065).
@@ -118,6 +140,8 @@ def icons(brief: str) -> str:
 
 def prompt(beat: dict, first: bool = False) -> str:
     brief = beat["picture"].strip().rstrip(".")
+    if CINEMATIC and (plain := SCHOOL.sub("", brief).strip(" ,.")):
+        brief = plain[0].upper() + plain[1:]
     return f"{brief}. {FIRST if first else ''}{icons(brief)}{STYLE}"[:2000]
 
 

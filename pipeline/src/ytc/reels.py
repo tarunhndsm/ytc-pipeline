@@ -82,10 +82,14 @@ included; a long line can cut to a close-up, so it has two), the automatic check
 part of a series: it must still feel whole, ending on a turn that makes viewers want the next part.
 
 Score each 1 to 10 (10 exceptional, 8 strong, 7 publishable, 6 or lower must be fixed), with a one-line note:
-- hook: in the first 2 seconds (spoken line, on-screen text, first frame), would a devotee scrolling past stop? On
-  YouTube, Reels that opened on a grey sculpture, a flower or a snake, after half a second of silence, lost half to
-  three quarters of viewers in the first seconds; one that opened on a vivid painting of Ravana with "रावण का असली
-  नाम… रावण नहीं था।" drew 65,000 plays.
+- hook: in the first 2 seconds (spoken line, on-screen text, first frame), would someone scrolling past who has never
+  heard this story stop? Every Reel of ours that passed 20,000 plays opened by stating a startling fact about a
+  famous figure ("कुंभकर्ण के मुँह से… किसी और ने वरदान माँगा था।", 344,000; "रावण का असली नाम… रावण नहीं था।",
+  151,000), and none of the nine that opened with a question ("कृष्ण ने गुरु सांदीपनि को… क्या अनोखी दक्षिणा दी?")
+  passed 4,000: a spoken line 1 that asks a question scores at most 5, and one about a story most Indians already know
+  at most 6. On YouTube, Reels that opened on a grey sculpture, a flower or a snake, after half a second of silence,
+  lost half to three quarters of viewers in the first seconds. A first frame that is a vivid close-up of the figure
+  line 1 names helps; a small picture on a blurred ground hurts.
 - retention: does every line make the viewer want the next, with no slack, so people watch to the end?
 - shareability: would viewers send this to family or friends? Is the revelation worth passing on?
 - payoff: does the ending deliver a real revelation that pays off the hook?
@@ -93,8 +97,10 @@ Score each 1 to 10 (10 exceptional, 8 strong, 7 publishable, 6 or lower must be 
   watches it once, with the voice and music coming to a natural close rather than stopping mid-thought?
 - narration: listen. Does it sound like a real, warm Indian storyteller speaking natural Hindi? Name any
   mispronounced word, odd pause, flat or robotic moment.
-- visuals: is every frame on-topic, sharp at phone size, striking, and different from the others? Instagram won't
-  monetize "content that primarily displays static images played in succession": going by each line's shots,
+- visuals: is every frame on-topic, sharp at phone size, striking, and different from the others? Pictures credited
+  as made with AI were painted for their lines: judge whether each shows its line's moment, whether a figure looks
+  the same from line to line, and mark down distorted faces or hands and stray letters, not the style. Instagram
+  won't monetize "content that primarily displays static images played in succession": going by each line's shots,
   does the Reel move like film, or is it a slideshow?
 - accuracy: is every claim faithful to the named sources, respectful to the deities and traditions, free of
   politics and of anything that would offend a devotee? Instagram limits the money from religion told in a

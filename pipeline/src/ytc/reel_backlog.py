@@ -16,7 +16,7 @@ import re
 import unicodedata
 from datetime import date
 
-from . import llm, reel_sources, reel_writer
+from . import llm, reel_art, reel_sources, reel_writer
 
 log = logging.getLogger(__name__)
 
@@ -55,20 +55,29 @@ Propose {count} new stories, mixing the three texts. Each must:
   Reels about well-known figures draw a hundred times the plays of the rest;
 - end on an uplifting or meaningful note: nothing political, nothing comparing castes or communities, and no story
   whose point is violence or death;
-- be one that old Indian paintings show: every line of the Reel shows a Pahari or Rajasthani painting from a
-  museum's open collection, so choose figures and episodes painters showed often; a story whose figures nobody
-  painted can't be made (Dhruva's penance was set aside for that);
+{art}
 - not be one of the stories below, already made or planned, nor another telling of one.
 
-For each give: story, a short English title; hook, the opening line in natural spoken Hindi (Devanagari, at most 14
-words) that would stop a devotee scrolling; source, as above; picture, the kind of old Indian painting that could
-show it, or ""; care, what to leave out or tell gently, or ""; and names, two or three names of people or beings in
-the story as they would be spelled in the English translation of those chapters (for example "Ambarisha",
-"Durvasa").
+For each give: story, a short English title; hook, the opening line in natural spoken Hindi (Devanagari, at most 10
+words) that would stop anyone scrolling: the startling fact stated, never a question, like "कुंभकर्ण के मुँह से…
+किसी और ने वरदान माँगा था।"; source, as above; picture, {picture}; care, what to leave out or tell gently, or "";
+and names, two or three names of people or beings in the story as they would be spelled in the English translation
+of those chapters (for example "Ambarisha", "Durvasa").
 {guidance}
 Already made or planned:
 {known}
 """
+# PROMPT's {art} and {picture}: with reel_art.CINEMATIC every line is painted, so any story can be shown, and the
+# stories are chosen for their shock instead.
+MUSEUM_ART = """- be one that old Indian paintings show: every line of the Reel shows a Pahari or Rajasthani painting from a
+  museum's open collection, so choose figures and episodes painters showed often; a story whose figures nobody
+  painted can't be made (Dhruva's penance was set aside for that);"""
+SHOCK = """- carry a shock in its source: a famous figure humbled or outdone, a god who lost, a boon or a curse with a
+  twist, a strange birth, a secret, or a fact most Indians believe the other way round. Our six Reels that passed
+  150,000 plays were all such facts about figures every Hindi viewer knows (Ravana's real name, the boon Kumbhakarna
+  never meant to ask for, Markandeya seeing the universe inside a child); gentle stories of lesser figures drew 2,000;"""
+MUSEUM_PICTURE = "the kind of old Indian painting that could show it, or \"\""
+PAINTED_PICTURE = "the most striking moment to paint for the first frame, in English"
 GUIDANCE = """
 What our numbers say viewers want now (the growth desk, ytc.growth): favour stories that fit these, where they meet
 every rule above:
@@ -135,7 +144,7 @@ def check(row: dict, stories: list[dict]) -> str | None:
     found = [n for n in names if n[:5] in pages]
     if len(names) < 2 or len(found) < len(names):
         return f"names not in those chapters: {sorted(set(names) - set(found))}"
-    if (named := pictured(row["names"])) < ART_MIN and museums_answer():
+    if not reel_art.CINEMATIC and (named := pictured(row["names"])) < ART_MIN and museums_answer():
         return f"{named} usable pictures name {', '.join(row['names'])}; at least {ART_MIN} are needed"
     return None
 
@@ -180,7 +189,9 @@ def refill(count: int = 10, dry: bool = False, guidance: str = "") -> dict:
     what was turned down."""
     stories = known()
     listing = "\n".join(f"- {s['story']} ({s['source']})" for s in stories)
-    prompt = PROMPT.format(count=count, known=listing, guidance=GUIDANCE.format(themes=guidance) if guidance else "")
+    prompt = PROMPT.format(count=count, known=listing, guidance=GUIDANCE.format(themes=guidance) if guidance else "",
+                           art=SHOCK if reel_art.CINEMATIC else MUSEUM_ART,
+                           picture=PAINTED_PICTURE if reel_art.CINEMATIC else MUSEUM_PICTURE)
     answer = llm.generate(prompt, schema=SCHEMA, models=reel_writer.SCRIPT_MODELS, purpose="backlog refill")
     added, turned_down = [], {}
     for row in answer.get("stories", []):

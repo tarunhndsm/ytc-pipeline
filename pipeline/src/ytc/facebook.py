@@ -184,6 +184,8 @@ def auto_candidate(folder: Path, start: datetime) -> datetime | None:
     if not path.exists() or record(folder) is not None:
         return None
     saved = json.loads(path.read_text(encoding="utf-8"))
+    if saved.get("withdrawn"):
+        return None
     due, scheduled = _when(saved.get("dueAt")), _when(saved.get("scheduled_at"))
     return due if due and (due >= start or scheduled and scheduled >= start) else None
 
@@ -211,7 +213,7 @@ def past_reels(root: Path, now: datetime) -> list[dict]:
             continue
         saved = json.loads(path.read_text(encoding="utf-8"))
         due = _when(saved.get("dueAt"))
-        if due and due < now and saved.get("media_url"):
+        if due and due < now and saved.get("media_url") and not saved.get("withdrawn"):
             local.append({"folder": folder, "due": due, "published": due})
     return local
 

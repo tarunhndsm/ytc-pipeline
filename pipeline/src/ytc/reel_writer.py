@@ -18,7 +18,7 @@ from pathlib import Path
 
 import yaml
 
-from . import captions, llm, reel_sources, reels
+from . import captions, llm, reel_art, reel_sources, reels
 from .spec import ShortSpec
 
 log = logging.getLogger(__name__)
@@ -83,10 +83,11 @@ KANDAS = {"bala": ("baala", "bala"), "ayodhya": ("ayodhya", "ayodhya"), "aranya"
 # "20-34", "145, 146 and 150", or "6.22-23" (verses of one chapter).
 _CHAPTERS = r"(\d+(?:\.\d+)?(?:\s*[-–]\s*\d+(?:\.\d+)?)?(?:\s*(?:,|\band\b)\s*\d+(?:\s*[-–]\s*\d+)?)*)"
 
-DIRECTION = ("Narrate the transcript below in Hindi as a warm, captivating storyteller from North India telling a "
-             "story from the {text} to friends on Instagram. Natural, conversational Hindi with authentic native "
-             "pronunciation, not a formal news-reader voice. Brisk, confident pace; short dramatic pauses where you "
-             "see '…'; {tones}. Speak only the transcript, nothing else.")
+DIRECTION = ("Narrate the transcript below in Hindi as a gripping storyteller from North India telling a "
+             "story from the {text} to friends on Instagram, as if revealing a secret. Natural, conversational Hindi "
+             "with authentic native pronunciation, not a formal news-reader voice. Brisk, confident pace with real "
+             "drama in the voice; short dramatic pauses where you see '…'; {tones}. Speak only the transcript, "
+             "nothing else.")
 
 SCHEMA = {
     "type": "object",
@@ -131,15 +132,22 @@ Reel from 1 to 10 on its hook, retention, shareability, payoff, ending, narratio
 published only if it scores at least as well as the Reel before it. Write the next one.
 
 The story: {story}
-Its hook, to open with (sharpen it if you can): {hook}
+Its hook, to open with (sharpen it if you can, and if it asks a question, state its answer as the shock): {hook}
 Source: {source}
 {care}
 The narration, as beats (one line of narration each):
 - {beats_min} to {beats_max} lines, {words_min} to {words_max} words in all, so the Reel runs about a minute; never
   cut the story short to fit. Each line is one breath of {line_min} to {line_max} words.
-- Line 1 is the hook: in under 2 seconds it must stop a devotee scrolling past, with a startling fact or question
-  from this story, not a greeting or a summary. At most {hook_words} words, naming the story's best-known figure:
-  "रावण का असली नाम… रावण नहीं था।" drew 65,000 plays, while openings of 11 to 15 words lost most viewers.
+- Line 1 is the hook: in under 2 seconds it must stop someone scrolling past who has never heard this story. It
+  states the most startling true fact the source gives, and never asks: a famous figure humbled or outdone, a god
+  who lost, a boon or a curse with a twist, a secret, or something most Indians believe the other way round. Name
+  the story's best-known figure and keep the surprise for after the "…". At most {hook_words} words; never a
+  question, a greeting or a summary. Our most-played Reels opened like this: "राम सेतु पाँच दिन में… रोज़ का हिसाब
+  लिखा है!" (361,000 plays), "कुंभकर्ण के मुँह से… किसी और ने वरदान माँगा था।" (344,000), "मार्कंडेय जी ने एक बालक
+  के पेट में… ब्रह्मांड देखा!" (323,000), "रावण का असली नाम… रावण नहीं था।" (151,000). None of the nine that opened
+  with a question ("कृष्ण ने गुरु सांदीपनि को… क्या अनोखी दक्षिणा दी?") passed 4,000.
+- Line 2 raises the stakes at once (who it happened to, what was at risk), and near the middle one line turns the
+  story ("पर तभी…"), so nobody leaves halfway.
 - Every line makes the viewer want the next: no background they don't need, no repetition, no sermon.
 - The last few lines pay off the hook with a real revelation from the source, the kind of fact viewers send to
   their family.
@@ -164,25 +172,13 @@ The narration, as beats (one line of narration each):
 How the Reel runs around your lines (the page adds the lines in quotes, in the same voice):
 {around}
 {quiz}
-The pictures (they are chosen later from what you write):
-- Every line gets a picture of its own, the last one too{reused}.
-- picture: in English, exactly what the line's picture should show: the person, being, place or object the line
-  names, at that moment of the story (a child, if the line is about his childhood). The pictures come from museum
-  collections of Indian paintings and sculpture (the Cleveland Museum of Art, the Met, LACMA, the Freer, the
-  Wellcome Collection) and from Wikimedia Commons, so describe what such a picture would show, and nothing about
-  effects, light or motion. Never a photograph: a photo among the paintings looks out of place, so a river, a
-  mountain, a plant, an animal or a temple is as Indian art shows it (the Ganga in a Pahari painting). Line 1's
-  picture is the first frame in the feed: the figure line 1 names, in a vivid, colourful painting, never a grey
-  sculpture, a landscape, a plant or an animal on its own.
-- search: 2 to 4 short English search terms, each what you would type into a museum's search box to find that
-  picture. The first is the name of whoever or whatever the line shows, as museums spell it (Krishna, Brahma,
-  Garuda, Ashtavakra), since a painting of this very story may exist; then the scene (Janaka court) or the
-  painting's tradition (Bhagavata Purana, Pahari, Kangra, Kalighat). Never a museum's name or a bare word like
-  "sage" or "sculpture".{picture}
+{pictures}{picture}
 {series}
 For the post:
-- title: a Hindi curiosity question of at most 8 words, like "सूर्य देव के सारथी के पैर क्यों नहीं हैं?"
-- hook_text: at most 6 Hindi words shown on screen over line 1, adding to the spoken hook, not repeating it.
+- title: a Hindi curiosity question of at most 8 words naming the story's best-known figure, like "सूर्य देव के सारथी
+  के पैर क्यों नहीं हैं?"; it may end with one emoji, 😱 or 🙏.
+- hook_text: 2 to 5 Hindi words shown big on screen over line 1, the shock as a headline ending in "!", like "यमराज
+  भी हार गए!" or "भीम का घमंड टूटा!": adding to the spoken hook, not repeating it.
 - summary: the caption's paragraph in Hindi, 4 to 7 sentences, starting with the text's name and "की कथा:", and
   telling the story as the source does.
 - teaser: one short Hindi line after it, a thought to leave the reader with.
@@ -208,6 +204,32 @@ The narration of the best-reviewed Reel so far, for the voice and the pace (not 
 The source text:
 {sources}
 """
+
+# PROMPT's {pictures}: museum pictures, or with reel_art.CINEMATIC a painting made for every line.
+MUSEUM_PICTURES = """The pictures (they are chosen later from what you write):
+- Every line gets a picture of its own, the last one too{reused}.
+- picture: in English, exactly what the line's picture should show: the person, being, place or object the line
+  names, at that moment of the story (a child, if the line is about his childhood). The pictures come from museum
+  collections of Indian paintings and sculpture (the Cleveland Museum of Art, the Met, LACMA, the Freer, the
+  Wellcome Collection) and from Wikimedia Commons, so describe what such a picture would show, and nothing about
+  effects, light or motion. Never a photograph: a photo among the paintings looks out of place, so a river, a
+  mountain, a plant, an animal or a temple is as Indian art shows it (the Ganga in a Pahari painting). Line 1's
+  picture is the first frame in the feed: the figure line 1 names, in a vivid, colourful painting, never a grey
+  sculpture, a landscape, a plant or an animal on its own.
+- search: 2 to 4 short English search terms, each what you would type into a museum's search box to find that
+  picture. The first is the name of whoever or whatever the line shows, as museums spell it (Krishna, Brahma,
+  Garuda, Ashtavakra), since a painting of this very story may exist; then the scene (Janaka court) or the
+  painting's tradition (Bhagavata Purana, Pahari, Kangra, Kalighat). Never a museum's name or a bare word like
+  "sage" or "sculpture"."""
+PAINTED_PICTURES = """The pictures (each line's is painted for it later, from what you write):
+- Every line gets a picture of its own, the last one too{reused}.
+- picture: in English, one frame of a film for this line, for the painter: who is in it, by name (and their age if
+  young), what they do at this very moment, their expression and feeling, where they are, the light, and how close
+  we are (a close-up of a face for a feeling, wide for a vast sky, an army or a palace). One moment, at most three
+  figures, nothing modern and no writing. Name each figure in every picture they are in, never "he" or "the sage",
+  so they look the same from line to line. Line 1's picture is the first frame in the feed: the figure line 1 names,
+  close up, with the strongest feeling of the story (awe, fear, fury, shock), never a landscape on its own.
+- search: 2 to 4 short English terms, the names first, then the scene (Krishna, Kaliya, Yamuna)."""
 
 # PROMPT's {quiz} while the quiz is on.
 QUIZ_PROMPT = """
@@ -512,14 +534,17 @@ def problems(script: dict, pages: list[dict] | None = None) -> list[str]:
             found.append(f"Line {number} needs a picture brief and 1 to 4 search terms.")
         if bad := [t for t in beat["search"] if _NOT_A_SEARCH.search(t)]:
             found.append(f"Line {number}'s search terms {bad} name a museum; give only names, scenes and traditions.")
-        if _EFFECT.search(beat["picture"]):
+        if _EFFECT.search(beat["picture"]) and not reel_art.CINEMATIC:
             found.append(f"Line {number}'s picture brief asks for an effect; say only what the picture shows.")
+        if number == 1 and beat["text"].rstrip().endswith("?"):
+            found.append("Line 1 asks a question; state the startling fact instead (none of our Reels that opened "
+                         "with a question passed 4,000 plays).")
     if sum(beat["sfx"] == "whoosh" for beat in beats) > 2:
         found.append("Use \"whoosh\" on at most 2 lines.")
     if sum(beat["sfx"] == "riser" for beat in beats) > 1:
         found.append("Use \"riser\" on at most 1 line.")
-    if len(script["hook_text"].split()) > 6:
-        found.append("hook_text has more than 6 words.")
+    if len(script["hook_text"].split()) > 5:
+        found.append("hook_text has more than 5 words.")
     if len(script["title"].split()) > 9:
         found.append("The title has more than 8 words.")
     tags = [t.lower() for t in script["hashtags"]]
@@ -595,7 +620,9 @@ def _prompt(row: dict, pages: list[dict], before: tuple[Path, dict] | None = Non
             reel_id: str = "") -> str:
     care = f"Care: {row['care']}\n" if row["care"] else ""
     picture = (f"\n- The backlog suggests this picture; use it for the line it fits: {row['picture']}"
-               if row["picture"] else "")
+               if row["picture"] and not reel_art.CINEMATIC else "")
+    pictures = (PAINTED_PICTURES if reel_art.CINEMATIC else MUSEUM_PICTURES).format(
+        reused="; the question after it shows line 1's picture again" if QUIZ else "")
     sources = "\n\n".join(f"[{page['url']}]\n{page['text']}" for page in pages)
     quiz = QUIZ_PROMPT.format(ask=ASK.format(question="<your quiz question>"), question_min=QUESTION_WORDS[0],
                               question_max=QUESTION_WORDS[1], answer_min=ANSWER_WORDS[0],
@@ -603,8 +630,7 @@ def _prompt(row: dict, pages: list[dict], before: tuple[Path, dict] | None = Non
     return PROMPT.format(story=row["story"], hook=row["hook"], source=row["source"], care=care, picture=picture,
                          beats_min=BEATS[0], beats_max=BEATS[1], words_min=WORDS[0], words_max=WORDS[1],
                          line_min=LINE_WORDS[0], line_max=LINE_WORDS[1], hook_words=HOOK_WORDS,
-                         around=_around(before, part), quiz=quiz,
-                         reused="; the question after it shows line 1's picture again" if QUIZ else "",
+                         around=_around(before, part), quiz=quiz, pictures=pictures,
                          series=_series(part, reel_id), hashtags=" and ".join(HASHTAGS),
                          lessons=lessons(), audience=audience(), example=example(), sources=sources)
 
