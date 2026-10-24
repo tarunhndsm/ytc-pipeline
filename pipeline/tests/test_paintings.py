@@ -453,9 +453,43 @@ class WaitingPicturesTests(unittest.TestCase):
 
     def test_no_more_than_waiting_max_wait(self) -> None:
         self.state["reels"] |= {f"ak8{n}": {"fails": {}, "waits": "paintings"} for n in range(reel_factory.WAITING_MAX)}
-        self._make()
+        with patch.object(reel_art, "CINEMATIC", False):
+            self._make()
         mine = self.state["reels"]["ak903"]
         self.assertEqual((mine.get("waits"), mine["fails"]), (None, {"pictures": 1}))
+
+    def test_painted_line_by_line_every_story_short_of_neurons_waits(self) -> None:
+        self.state["reels"] |= {f"ak8{n}": {"fails": {}, "waits": "paintings"} for n in range(reel_factory.WAITING_MAX)}
+        self.state["reels"]["ak903"]["transient"] = {"pictures": reel_factory.TRANSIENT_GIVE_UP}
+        with patch.object(reel_art, "CINEMATIC", True):
+            self.assertEqual(self._make(), "failed")
+        mine = self.state["reels"]["ak903"]
+        self.assertEqual((mine.get("waits"), mine["fails"], mine.get("set_aside")), ("paintings", {}, None))
+
+    def test_painted_line_by_line_nothing_is_started_or_pictured_again_without_neurons(self) -> None:
+        found = {"booked": [], "pending": [], "failed": ["ak904"], "stuck": [], "unfinished": [], "waiting": []}
+        now = datetime(2026, 10, 24, 21, 3, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(reel_factory, "PAUSE", Path(tmp) / "FACTORY_PAUSE"), \
+                patch.object(reel_factory, "supply", return_value=found), \
+                patch.object(reel_factory, "_stalled", return_value=False), \
+                patch.object(reel_factory, "readable_left", return_value=10), \
+                patch.object(reel_factory, "_pictures_failed", return_value=True), \
+                patch.object(reel_factory.reel_rescue, "to_render", return_value=[]), \
+                patch.object(reel_factory, "waits_for_judge", return_value=""), \
+                patch.object(reel_factory.reel_writer, "next_story", return_value=({"story": "x"}, [])), \
+                patch.object(reel_factory.reel_writer, "next_id", return_value="ak905"), \
+                patch.object(reel_art, "ready", return_value=True), \
+                patch.object(reel_art, "CINEMATIC", True):
+            spent = {"reels": {}, "made": {}, "neurons": {"2026-10-24": reel_art.DAILY_NEURONS}}
+            reel, done = reel_factory.decide(spent, now, False)
+            self.assertEqual(reel, None)
+            self.assertIn("neurons are spent", done["decision"])
+            reel, done = reel_factory.decide({"reels": {}, "made": {}, "neurons": {}}, now, False)
+            self.assertEqual((reel, done["decision"]), ("ak904", "picturing again"))
+            found["failed"] = []
+            reel, done = reel_factory.decide({"reels": {}, "made": {}, "neurons": {}}, now, False)
+        self.assertEqual((reel, done["decision"]), ("ak905", "starting"))
 
     def test_taken_up_again_once_the_neurons_are_back(self) -> None:
         found = {"booked": [], "pending": [f"ak0{n}" for n in range(10, 20)], "failed": [], "stuck": [],
@@ -514,7 +548,7 @@ class DecideTests(unittest.TestCase):
     def test_no_paint_pass_once_todays_neurons_are_spent(self) -> None:
         state = {"reels": {}, "made": {}, "neurons": {"2026-10-20": reel_art.DAILY_NEURONS}}
         reel, done = reel_factory.decide(state, self.now, False)
-        self.assertEqual((reel, done["decision"]), (None, "no readable story"))
+        self.assertEqual(reel, None)
         self.assertEqual(self.passes, [0])
 
     def test_a_day_at_the_cap_still_rescues(self) -> None:

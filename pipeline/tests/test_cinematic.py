@@ -39,6 +39,10 @@ class PaintedTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def _incoming(self, *names: str) -> None:
+        for name in names:
+            _reel(self.root, name, painted=True)
+
     def test_only_a_reel_whose_every_picture_was_painted_for_it_counts(self) -> None:
         self.assertTrue(reel_pictures.all_painted(_reel(self.root, "ak101", painted=True)))
         self.assertFalse(reel_pictures.all_painted(_reel(self.root, "ak102", painted=False)))
@@ -50,6 +54,7 @@ class PaintedTests(unittest.TestCase):
         _reel(self.root, "ak102", painted=False, due=NOW + timedelta(hours=29))
         _reel(self.root, "ak103", painted=False, due=NOW + timedelta(hours=5))
         _reel(self.root, "ak104", painted=True, due=NOW + timedelta(hours=3))
+        self._incoming("ak110", "ak111", "ak112")
         done, swapped, later = {"moved": {}, "errors": []}, set(), [NOW + timedelta(days=3)]
         with patch.object(instagram, "_buffer") as buffer:
             self.assertEqual(reel_cloud.swap_for("ak110", NOW, done, swapped, later, dry=True), NOW + timedelta(hours=5))
@@ -62,17 +67,42 @@ class PaintedTests(unittest.TestCase):
 
     def test_an_open_slot_before_the_older_booking_is_taken_instead(self) -> None:
         _reel(self.root, "ak101", painted=False, due=NOW + timedelta(hours=5))
+        self._incoming("ak110")
         done = {"moved": {}, "errors": []}
         self.assertIsNone(reel_cloud.swap_for("ak110", NOW, done, set(), [NOW + timedelta(hours=4)], dry=True))
         self.assertEqual(reel_cloud.swap_for("ak110", NOW, done, set(), [], dry=True), NOW + timedelta(hours=5))
 
     def test_with_cinematic_off_no_booking_is_taken(self) -> None:
         _reel(self.root, "ak101", painted=False, due=NOW + timedelta(hours=5))
+        self._incoming("ak110")
         with patch.object(reel_art, "CINEMATIC", False):
             self.assertIsNone(reel_cloud.swap_for("ak110", NOW, {"moved": {}, "errors": []}, set(), [], dry=True))
 
+    def test_an_older_reel_takes_no_booking(self) -> None:
+        _reel(self.root, "ak101", painted=False, due=NOW + timedelta(hours=5))
+        _reel(self.root, "ak120", painted=False)
+        self.assertIsNone(reel_cloud.swap_for("ak120", NOW, {"moved": {}, "errors": []}, set(), [], dry=True))
+
+    def test_the_queue_is_filled_with_painted_reels_first_then_older_ones(self) -> None:
+        for name, painted, total in (("ak130", False, 70.0), ("ak131", True, 60.0)):
+            folder = _reel(self.root, name, painted=painted)
+            (folder / f"{name}.mp4").write_bytes(b"")
+            (folder / reels.REVIEW).write_text(json.dumps({"total": total}), encoding="utf-8")
+        done = {"scheduled": {}, "held": {}, "moved": {}, "errors": []}
+        planned: list[datetime] = []
+        with patch.object(reels, "rescued", return_value=None), \
+                patch.object(reels, "unshippable", return_value=None), \
+                patch.object(reels, "bar", return_value=73.4), \
+                patch.object(reel_cloud, "_dues", return_value=[]), \
+                patch.object(reel_cloud, "_after", return_value=(None, "")), \
+                patch.object(reel_cloud, "free_slots",
+                             side_effect=lambda now, count, planned, after: [NOW + timedelta(hours=2 + len(planned))]):
+            reel_cloud.fill_queue(NOW, done, planned, dry=True)
+        self.assertEqual(list(done["scheduled"]), ["ak131", "ak130"])
+
     def test_the_older_reels_post_is_deleted_with_the_brands_key_and_it_is_not_booked_again(self) -> None:
         folder = _reel(self.root, "ak101", painted=False, due=NOW + timedelta(hours=5))
+        self._incoming("ak110")
         done = {"moved": {}, "errors": []}
         with patch.object(instagram, "_buffer", return_value=DELETED) as buffer:
             self.assertEqual(reel_cloud.swap_for("ak110", NOW, done, set(), []), NOW + timedelta(hours=5))
@@ -84,6 +114,7 @@ class PaintedTests(unittest.TestCase):
 
     def test_a_post_buffer_wont_delete_keeps_its_slot(self) -> None:
         folder = _reel(self.root, "ak101", painted=False, due=NOW + timedelta(hours=5))
+        self._incoming("ak110")
         done = {"moved": {}, "errors": []}
         refused = {"deletePost": {"__typename": "VoidMutationError", "message": "post not found"}}
         with patch.object(instagram, "_buffer", return_value=refused):

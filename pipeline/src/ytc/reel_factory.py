@@ -449,10 +449,12 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             mine["pushed"] = rescue.get("pushed") or datetime.now(timezone.utc).isoformat(timespec="seconds")
             done["why"] = f"rescue needs paintings Cloudflare refuses until the neurons are back: {last}"
             return "failed"
+        # Painted line by line, a story can't be pictured at all until the neurons are back, and decide starts none
+        # meanwhile, so it always waits: counted as failures, a new story was set aside every few minutes (24 Oct).
         if (step == "pictures" and SHORT_OF_PICTURES.search(last) and reel_art.ready()
                 and _neurons_left(state, datetime.now(timezone.utc)) < reel_art.NEURONS_EACH
-                and transient.get(step, 0) < TRANSIENT_GIVE_UP
-                and sum(bool(other.get("waits")) for other in state["reels"].values()) < WAITING_MAX):
+                and (reel_art.CINEMATIC or (transient.get(step, 0) < TRANSIENT_GIVE_UP
+                     and sum(bool(other.get("waits")) for other in state["reels"].values()) < WAITING_MAX))):
             # Another try today finds the same museum pictures (ak077's tries on 21 Oct each came up 8 lines short),
             # and a story set aside comes back only by hand: it waits for the paintings (decide).
             transient[step] = transient.get(step, 0) + 1
@@ -527,8 +529,10 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     # story, and the rest passed.
     if rescues := reel_rescue.to_render(found["failed"], stored):
         return rescues[0], done | {"decision": "rescuing"}
+    # Every line is painted (reel_art.CINEMATIC), so with the day's neurons spent no story can be pictured.
+    starved = reel_art.CINEMATIC and reel_art.ready() and _neurons_left(state, now) < reel_art.NEURONS_EACH
     again = [reel for reel in found["failed"] if _pictures_failed(reels.REELS / reel, state["reels"].get(reel, {}))]
-    if again and not capped:
+    if again and not capped and not starved:
         return again[0], done | {"decision": "picturing again"}
     # Too few of its pictures are left and it can't go back to the picture step: paintings stand in for them.
     if reel_art.ready() and (paintings := int(_neurons_left(state, now) // reel_art.NEURONS_EACH)) and (
@@ -536,6 +540,9 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
         return rescues[0], done | {"decision": "rescuing"}
     if capped:
         return None, done | {"decision": f"already made {DAILY_CAP} today"}
+    if starved:
+        return None, done | {"decision": "today's neurons are spent: no story can be painted until Cloudflare's "
+                                         "reset at 05:30 IST"}
     if not reel_writer.next_story():
         done["alerts"].append(("backlog", "the backlog has no story the writer can read; no Reel made"))
         return None, done | {"decision": "no readable story"}

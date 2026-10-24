@@ -216,9 +216,15 @@ def _postable(e: dict) -> bool:
     return e["state"] == "waiting" and e["format"] >= FORMAT
 
 
+def _past_due(record: dict) -> bool:
+    return bool(record.get("due_at")) and datetime.fromisoformat(record["due_at"]) <= _now()
+
+
 def inventory(eps: list[dict] | None = None) -> dict:
     eps = eps if eps is not None else episodes()
-    scheduled = [e for e in eps if e["state"] == "scheduled"]
+    # Buffer sends a post at its time even while it refuses the key and no sync can mark it sent, so a post already due
+    # isn't stock: counted, Shorts sent days before kept the studio from making any (21-25 Oct).
+    scheduled = [e for e in eps if e["state"] == "scheduled" and not _past_due(e["record"])]
     waiting = [e for e in eps if _postable(e)]
     return {"total": len(scheduled) + len(waiting), "in_buffer": len(scheduled), "waiting": len(waiting),
             "parked": sum(1 for e in eps if e["state"] == "waiting" and not _postable(e)),

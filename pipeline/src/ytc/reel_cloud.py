@@ -670,9 +670,10 @@ def swap_for(reel: str, now: datetime, done: dict, swapped: set[str], slots: lis
     """With reel_art.CINEMATIC, the slot of the soonest older Reel booked (old_booking) when it comes before `slots`,
     taken off Instagram for `reel`, a Reel painted line by line; None when there is none or taking it off failed.
     Buffer being busy is raised."""
-    from . import instagram, publish, reel_art
+    from . import instagram, publish, reel_art, reel_pictures, reels
 
-    if not reel_art.CINEMATIC or not (old := old_booking(now, swapped)) or (slots and slots[0] <= old[1]):
+    if not reel_art.CINEMATIC or not reel_pictures.all_painted(reels.REELS / reel) or \
+            not (old := old_booking(now, swapped)) or (slots and slots[0] <= old[1]):
         return None
     folder, due = old
     swapped.add(folder.name)
@@ -731,22 +732,22 @@ def fill_queue(now: datetime, done: dict, planned: list[datetime], dry: bool = F
     chain keep its order (`chain`: work's booked, gone and unsent)."""
     from . import instagram, publish, reel_art, reel_pictures, reel_rescue, reels
 
-    def rank(folder: Path) -> tuple[int, float] | None:
+    def rank(folder: Path) -> tuple[int, int, float] | None:
         if (folder / instagram.RECORD).exists() or folder.name in done["scheduled"] or \
                 folder.name in chain["unsent"] or not (folder / f"{folder.name}.mp4").exists():
-            return None
-        if reel_art.CINEMATIC and not reel_pictures.all_painted(folder):
             return None
         rescued = bool(reels.rescued(folder))
         if reel_rescue.unshippable(folder) if rescued else reels.unshippable(folder, with_bar=False):
             return None
-        return int(rescued), -reels._read(folder / reels.REVIEW)["total"]
+        # With reel_art.CINEMATIC a Reel painted line by line goes first; an older one only fills a slot none takes.
+        older = int(reel_art.CINEMATIC and not reel_pictures.all_painted(folder))
+        return older, int(rescued), -reels._read(folder / reels.REVIEW)["total"]
 
     chain = chain or {"booked": {}, "gone": set(), "unsent": set()}
     chain.setdefault("swapped", set())
     held = sorted((key, folder) for folder in sorted(p.parent for p in reels.REELS.glob("ak*/short.yaml"))
                   if (key := rank(folder)))
-    for (rescued, minus_total), folder in held:
+    for (_, rescued, minus_total), folder in held:
         total = -minus_total
         full = len({d for d in _dues() if d > now} | set(planned)) >= QUEUE
         after, why = _after(folder, chain["booked"], chain["gone"])
@@ -993,8 +994,6 @@ def work(dry: bool = False) -> dict:
             if not dry:
                 instagram.adopt(folder, post)
             done["scheduled"][reel] = f"{_ist(post['dueAt'])} (already in Buffer)"
-            continue
-        if reel_art.CINEMATIC and not reel_pictures.all_painted(folder):
             continue
         if not (folder / f"{reel}.mp4").exists():
             done["held"][reel] = "its render isn't in the reels volume"
