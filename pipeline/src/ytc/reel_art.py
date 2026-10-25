@@ -37,8 +37,9 @@ MODELS = {"@cf/black-forest-labs/flux-2-klein-4b": "FLUX.2 klein"}
 # Every line of a Reel gets a painting of its own (owner, 23 Oct: apply every strategy that makes Reels go viral). The
 # 104 most-viewed Hindi mythology Shorts of 13 to 23 Oct are vivid, film-like paintings with close, emotional faces; ours,
 # crops of old miniatures with small figures and cards on a blurred ground, held viewers 12 to 16 seconds, and no Reel
-# since 13 Oct passed 5,000 plays. Off, paintings stand in only where the museums have no picture.
-CINEMATIC = True
+# since 13 Oct passed 5,000 plays. Off, paintings stand in only where the museums have no picture, as in a story the
+# factory makes the older way (reel_factory.MUSEUM_WHEN_IDLE), whose steps it runs with YTC_CINEMATIC=0.
+CINEMATIC = os.environ.get("YTC_CINEMATIC") != "0"
 # Paintings a picture try may make; a Reel has 12 to 15 lines.
 MAX_PAINTED = 15 if CINEMATIC else 8
 # Ankahi's share of the account's 10,000 free neurons a day (UTC); the rest stays for the news desk's text fallback.

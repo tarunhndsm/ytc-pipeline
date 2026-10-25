@@ -1,8 +1,12 @@
 """Reels painted line by line (reel_art.CINEMATIC): which Reels count as painted, how one takes an older Reel's
-Instagram slot, what the factory still makes, and the writer's rule for line 1."""
+Instagram slot, what the factory still makes, the stories it makes the older way while a day ahead is idle, and the
+writer's rule for line 1."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -130,6 +134,109 @@ class PaintedTests(unittest.TestCase):
         found = reel_factory.supply({"reels": {}}, NOW)
         self.assertEqual(found["pending"], ["ak102"])
         self.assertEqual(found["booked"], ["ak103"])
+
+    def test_a_reel_made_the_older_way_for_an_idle_day_counts_as_waiting(self) -> None:
+        _reel(self.root, "ak101", painted=False)
+        _reel(self.root, "ak102", painted=False)
+        found = reel_factory.supply({"reels": {"ak102": {"museum": True, "pushed": NOW.isoformat()}}}, NOW)
+        self.assertEqual(found["pending"], ["ak102"])
+
+
+class MuseumWhenIdleTests(unittest.TestCase):
+    """While a day ahead has no Reel booked or made for it, the next story is made the older way, one at a time, and
+    every step of it runs so (reel_factory.MUSEUM_WHEN_IDLE)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.now = NOW.astimezone(timezone.utc)
+        self.found = {"booked": [], "pending": [], "failed": [], "stuck": [], "unfinished": [], "waiting": []}
+        for patcher in (
+                patch.object(reels, "REELS", self.root),
+                patch.object(reel_factory, "PAUSE", self.root / "FACTORY_PAUSE"),
+                patch.object(reel_factory, "supply", side_effect=lambda *args, **kwargs: self.found),
+                patch.object(reel_factory, "_stalled", return_value=False),
+                patch.object(reel_factory, "readable_left", return_value=10),
+                patch.object(reel_factory, "_pictures_failed", return_value=True),
+                patch.object(reel_factory.reel_rescue, "to_render", return_value=[]),
+                patch.object(reel_factory, "waits_for_judge", return_value=""),
+                patch.object(reel_writer, "next_story", return_value=({"story": "x"}, [])),
+                patch.object(reel_writer, "next_id", return_value="ak905"),
+                patch.object(reel_art, "ready", return_value=True),
+                patch.object(reel_art, "CINEMATIC", True),
+                patch.object(reel_factory, "MUSEUM_WHEN_IDLE", True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _decide(self, mine: dict | None = None, spent: bool = False) -> tuple[str | None, dict]:
+        neurons = {f"{self.now:%Y-%m-%d}": reel_art.DAILY_NEURONS} if spent else {}
+        return reel_factory.decide({"reels": mine or {}, "made": {}, "neurons": neurons}, self.now, False)
+
+    def test_a_day_ahead_with_nothing_for_it_gets_a_story_made_the_older_way_neurons_or_not(self) -> None:
+        for spent in (True, False):
+            reel, done = self._decide(spent=spent)
+            self.assertEqual((reel, done["decision"], done.get("museum")), ("ak905", "starting", True))
+
+    def test_it_goes_before_a_painted_reel_is_pictured_again(self) -> None:
+        self.found["failed"] = ["ak904"]
+        self.assertEqual(self._decide()[0], "ak905")
+        with patch.object(reel_factory, "MUSEUM_WHEN_IDLE", False):
+            reel, done = self._decide()
+        self.assertEqual((reel, done["decision"]), ("ak904", "picturing again"))
+
+    def test_with_every_day_ahead_booked_the_story_is_painted(self) -> None:
+        for day in range(1, 4):
+            _reel(self.root, f"ak80{day}", painted=True, due=NOW + timedelta(days=day))
+        self.found["booked"] = ["ak801", "ak802", "ak803"]
+        reel, done = self._decide()
+        self.assertEqual((reel, done["decision"], done.get("museum")), ("ak905", "starting", None))
+        reel, done = self._decide(spent=True)
+        self.assertEqual(reel, None)
+        self.assertIn("neurons are spent", done["decision"])
+
+    def test_reels_made_for_the_idle_days_leave_the_next_story_painted(self) -> None:
+        self.found["pending"] = ["ak801", "ak802", "ak803"]
+        reel, done = self._decide()
+        self.assertEqual((reel, done.get("museum")), ("ak905", None))
+
+    def test_one_story_at_a_time_is_made_the_older_way(self) -> None:
+        self.found["waiting"] = ["ak904"]
+        reel, done = self._decide({"ak904": {"museum": True, "waits": "paintings"}}, spent=True)
+        self.assertEqual(reel, None)
+        self.assertIn("neurons are spent", done["decision"])
+
+    def test_once_the_neurons_are_back_the_one_made_the_older_way_goes_first(self) -> None:
+        self.found["waiting"] = ["ak903", "ak904"]
+        reel, done = self._decide({"ak903": {"waits": "paintings"}, "ak904": {"museum": True, "waits": "paintings"}})
+        self.assertEqual((reel, done["decision"]), ("ak904", "resuming with paintings"))
+
+    def test_every_step_of_a_story_made_the_older_way_runs_so(self) -> None:
+        seen = []
+
+        def run(command: list[str], log: Path, timeout: int) -> tuple[int, str]:
+            seen.append(os.environ.get("YTC_CINEMATIC"))
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text("boom\n", encoding="utf-8")
+            return 1, "RuntimeError: boom"
+
+        state, logs = {"reels": {}, "made": {}, "neurons": {}}, self.root / "logs"
+        with patch.object(reel_factory, "_steps", return_value=[("write", lambda: False, ["true"], 60)]), \
+                patch.object(reel_factory, "_run", side_effect=run):
+            reel_factory.make("ak905", state, logs, {"steps": [], "alerts": [], "museum": True})
+            reel_factory.make("ak905", state, logs, {"steps": [], "alerts": []})
+            reel_factory.make("ak906", state, logs, {"steps": [], "alerts": []})
+        self.assertEqual(seen, ["0", "0", None])
+        self.assertTrue(state["reels"]["ak905"]["museum"])
+        self.assertNotIn("museum", state["reels"]["ak906"])
+        self.assertNotIn("YTC_CINEMATIC", os.environ)
+
+    def test_a_step_run_the_older_way_paints_only_where_no_museum_picture_fits(self) -> None:
+        code = "from ytc import reel_art as a; print(a.CINEMATIC, a.MAX_PAINTED, a.STYLE == a.MINIATURE)"
+        for env, expected in (({"YTC_CINEMATIC": "0"}, ["False", "8", "True"]), ({}, ["True", "15", "False"])):
+            out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                                 env={k: v for k, v in os.environ.items() if k != "YTC_CINEMATIC"} | env)
+            self.assertEqual(out.stdout.split(), expected)
 
 
 class PictureStepTests(unittest.TestCase):

@@ -81,6 +81,11 @@ SHORT_OF_PICTURES = re.compile(r"LookupError: no usable picture for lines")
 # Stories that may wait for paintings at once; past that a story short of pictures uses up its tries as before, so a
 # long Cloudflare outage can't turn the backlog into half-made Reels.
 WAITING_MAX = 3
+# Painted line by line (reel_art.CINEMATIC), a Reel takes about 15 paintings and the day's neurons paint two or three,
+# one of which may pass: Instagram had nothing booked from Tue 27 Oct. While one of the next three days has no Reel
+# booked and none is made for it, the next story is made the older way, museum pictures with a painting only where
+# none fits, one at a time; a painted Reel still takes its slot (reel_cloud.swap_for). False: every story is painted.
+MUSEUM_WHEN_IDLE = True
 # A judge's complaint about a picture shown again, which the picture step's rules settle, not about the picture itself.
 SHOWN_AGAIN = reel_rescue.SHOWN_AGAIN
 # Where a Reel sent back to the picture step keeps its old picks, QA, render and review, out of git.
@@ -178,8 +183,9 @@ def supply(state: dict, now: datetime, media: Path | None = None, stored: set[st
             if not record.get("withdrawn") and (when := _due(record)) and when > now:
                 found["booked"].append(folder.name)
             continue
-        # Only Reels painted line by line are booked now (reel_cloud), so the others are neither waiting nor rescued.
-        if reel_art.CINEMATIC and not reel_pictures.all_painted(folder):
+        # An older Reel only fills a slot no painted one takes (reel_cloud), so it is neither waiting nor rescued; one
+        # made the older way for a day ahead with nothing booked (MUSEUM_WHEN_IDLE) is.
+        if reel_art.CINEMATIC and not reel_pictures.all_painted(folder) and not mine.get("museum"):
             continue
         if _judged_and_failed(folder):
             found["failed"].append(folder.name)
@@ -364,6 +370,8 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
     step can't finish by `until`."""
     folder = reels.REELS / reel
     mine = state["reels"].setdefault(reel, {"started": datetime.now(IST).isoformat(timespec="seconds"), "fails": {}})
+    if done.get("museum"):
+        mine["museum"] = True
     mine.pop("waits", None)
     if (script := _read(folder / reel_writer.SCRIPT)) and script.get("row"):
         move_row(reel, script["row"])  # a resumed Reel's row, moved on a clone that was never pushed
@@ -388,10 +396,13 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             os.environ["YTC_MAX_REUSED"] = str(LAST_TRY_REUSED)
         if step in ("pictures", "rescue"):
             os.environ["YTC_PAINT_NEURONS"] = str(_neurons_left(state, datetime.now(timezone.utc)))
+        # Its script asks for museum pictures, so each step of a story made the older way is run the older way.
+        if mine.get("museum"):
+            os.environ["YTC_CINEMATIC"] = "0"
         try:
             code, tail = _run(command, logs / f"{reel}_{step}.log", timeout)
         finally:
-            for name in ("YTC_USAGE_LOG", "YTC_MAX_REUSED", "YTC_PAINT_NEURONS"):
+            for name in ("YTC_USAGE_LOG", "YTC_MAX_REUSED", "YTC_PAINT_NEURONS", "YTC_CINEMATIC"):
                 os.environ.pop(name, None)
         # Every try counts, failed ones too: they cost the same.
         spent = _spend(usage_log)
@@ -503,9 +514,9 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     done["supply"] = {k: v for k, v in found.items() if v}
     days = {_due(_read(reels.REELS / r / RECORD)).astimezone(IST).date() for r in found["booked"]}
     soon = [(now.astimezone(IST) + timedelta(days=d)).date() for d in range(1, 4)]
-    if (not found["pending"] and not found["unfinished"] and (empty := [d for d in soon if d not in days])
-            and _stalled(now)):
-        done["alerts"].append(("dry", f"no Reel is booked for {', '.join(f'{d:%a %d %b}' for d in empty)} and none "
+    idle = [d for d in soon if d not in days]
+    if not found["pending"] and not found["unfinished"] and idle and _stalled(now):
+        done["alerts"].append(("dry", f"no Reel is booked for {', '.join(f'{d:%a %d %b}' for d in idle)} and none "
                                "is waiting"))
     if found["stuck"]:
         done["alerts"].append(("stuck", f"{', '.join(found['stuck'])} made over {STUCK.days} days ago and still not "
@@ -516,6 +527,8 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     # A story the picture step was short of while the day's neurons were out goes on once they're back.
     paintable = [reel for reel in found.get("waiting", [])
                  if reel_art.ready() and _neurons_left(state, now) >= reel_art.NEURONS_EACH]
+    # One made the older way first: it needs a few paintings, a painted one about 15.
+    paintable.sort(key=lambda reel: not state["reels"].get(reel, {}).get("museum"))
     short = len(found["pending"]) < PENDING_MIN or len(found["booked"]) + len(found["pending"]) < AHEAD_MIN
     if not (short or force or found["unfinished"] or paintable):
         return None, done | {"decision": "supply is enough"}
@@ -531,8 +544,12 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
         return rescues[0], done | {"decision": "rescuing"}
     # Every line is painted (reel_art.CINEMATIC), so with the day's neurons spent no story can be pictured.
     starved = reel_art.CINEMATIC and reel_art.ready() and _neurons_left(state, now) < reel_art.NEURONS_EACH
+    # A day ahead with nothing for it gets a story made the older way (MUSEUM_WHEN_IDLE), before a painted one is
+    # pictured again with another 15 paintings.
+    museum = (MUSEUM_WHEN_IDLE and reel_art.CINEMATIC and len(found["pending"]) < len(idle)
+              and not any(state["reels"].get(reel, {}).get("museum") for reel in found.get("waiting", [])))
     again = [reel for reel in found["failed"] if _pictures_failed(reels.REELS / reel, state["reels"].get(reel, {}))]
-    if again and not capped and not starved:
+    if again and not capped and not starved and not museum:
         return again[0], done | {"decision": "picturing again"}
     # Too few of its pictures are left and it can't go back to the picture step: paintings stand in for them.
     if reel_art.ready() and (paintings := int(_neurons_left(state, now) // reel_art.NEURONS_EACH)) and (
@@ -540,7 +557,7 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
         return rescues[0], done | {"decision": "rescuing"}
     if capped:
         return None, done | {"decision": f"already made {DAILY_CAP} today"}
-    if starved:
+    if starved and not museum:
         return None, done | {"decision": "today's neurons are spent: no story can be painted until Cloudflare's "
                                          "reset at 05:30 IST"}
     if not reel_writer.next_story():
@@ -548,7 +565,7 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
         return None, done | {"decision": "no readable story"}
     if why := waits_for_judge(reel := reel_writer.next_id(), state, now):
         return None, done | {"decision": why}
-    return reel, done | {"decision": "starting"}
+    return reel, done | {"decision": "starting"} | ({"museum": True} if museum else {})
 
 
 def refill(state: dict, now: datetime) -> list[str]:

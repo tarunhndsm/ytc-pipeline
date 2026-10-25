@@ -480,7 +480,8 @@ class WaitingPicturesTests(unittest.TestCase):
                 patch.object(reel_factory.reel_writer, "next_story", return_value=({"story": "x"}, [])), \
                 patch.object(reel_factory.reel_writer, "next_id", return_value="ak905"), \
                 patch.object(reel_art, "ready", return_value=True), \
-                patch.object(reel_art, "CINEMATIC", True):
+                patch.object(reel_art, "CINEMATIC", True), \
+                patch.object(reel_factory, "MUSEUM_WHEN_IDLE", False):
             spent = {"reels": {}, "made": {}, "neurons": {"2026-10-24": reel_art.DAILY_NEURONS}}
             reel, done = reel_factory.decide(spent, now, False)
             self.assertEqual(reel, None)
