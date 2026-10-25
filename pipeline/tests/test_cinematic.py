@@ -178,12 +178,12 @@ class MuseumWhenIdleTests(unittest.TestCase):
             reel, done = self._decide(spent=spent)
             self.assertEqual((reel, done["decision"], done.get("museum")), ("ak905", "starting", True))
 
-    def test_it_goes_before_a_painted_reel_is_pictured_again(self) -> None:
+    def test_a_painted_reel_is_pictured_again_first_while_the_neurons_last(self) -> None:
         self.found["failed"] = ["ak904"]
-        self.assertEqual(self._decide()[0], "ak905")
-        with patch.object(reel_factory, "MUSEUM_WHEN_IDLE", False):
-            reel, done = self._decide()
+        reel, done = self._decide()
         self.assertEqual((reel, done["decision"]), ("ak904", "picturing again"))
+        reel, done = self._decide(spent=True)
+        self.assertEqual((reel, done["decision"], done.get("museum")), ("ak905", "starting", True))
 
     def test_with_every_day_ahead_booked_the_story_is_painted(self) -> None:
         for day in range(1, 4):

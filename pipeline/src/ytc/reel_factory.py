@@ -85,6 +85,7 @@ WAITING_MAX = 3
 # one of which may pass: Instagram had nothing booked from Tue 27 Oct. While one of the next three days has no Reel
 # booked and none is made for it, the next story is made the older way, museum pictures with a painting only where
 # none fits, one at a time; a painted Reel still takes its slot (reel_cloud.swap_for). False: every story is painted.
+# A Reel pictured again repaints only the lines the judge faulted, so it still goes first while the neurons last.
 MUSEUM_WHEN_IDLE = True
 # A judge's complaint about a picture shown again, which the picture step's rules settle, not about the picture itself.
 SHOWN_AGAIN = reel_rescue.SHOWN_AGAIN
@@ -527,7 +528,7 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     # A story the picture step was short of while the day's neurons were out goes on once they're back.
     paintable = [reel for reel in found.get("waiting", [])
                  if reel_art.ready() and _neurons_left(state, now) >= reel_art.NEURONS_EACH]
-    # One made the older way first: it needs a few paintings, a painted one about 15.
+    # One made the older way first: it paints at most 8 lines a try (reel_art.MAX_PAINTED), a painted one up to 15.
     paintable.sort(key=lambda reel: not state["reels"].get(reel, {}).get("museum"))
     short = len(found["pending"]) < PENDING_MIN or len(found["booked"]) + len(found["pending"]) < AHEAD_MIN
     if not (short or force or found["unfinished"] or paintable):
@@ -544,12 +545,12 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
         return rescues[0], done | {"decision": "rescuing"}
     # Every line is painted (reel_art.CINEMATIC), so with the day's neurons spent no story can be pictured.
     starved = reel_art.CINEMATIC and reel_art.ready() and _neurons_left(state, now) < reel_art.NEURONS_EACH
-    # A day ahead with nothing for it gets a story made the older way (MUSEUM_WHEN_IDLE), before a painted one is
-    # pictured again with another 15 paintings.
+    # A day ahead with nothing for it gets a story made the older way (MUSEUM_WHEN_IDLE), even with the day's
+    # neurons spent: the museums may show every line.
     museum = (MUSEUM_WHEN_IDLE and reel_art.CINEMATIC and len(found["pending"]) < len(idle)
               and not any(state["reels"].get(reel, {}).get("museum") for reel in found.get("waiting", [])))
     again = [reel for reel in found["failed"] if _pictures_failed(reels.REELS / reel, state["reels"].get(reel, {}))]
-    if again and not capped and not starved and not museum:
+    if again and not capped and not starved:
         return again[0], done | {"decision": "picturing again"}
     # Too few of its pictures are left and it can't go back to the picture step: paintings stand in for them.
     if reel_art.ready() and (paintings := int(_neurons_left(state, now) // reel_art.NEURONS_EACH)) and (
