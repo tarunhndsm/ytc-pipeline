@@ -372,7 +372,11 @@ def _read(name: str) -> bytes | None:
 
 
 def collect(root: Path, episode_id: str, call_id: str, key: str | None = None) -> dict | None:
-    """A finished worker's outcome, with its files unpacked into the repo; None while it's still working."""
+    """A finished worker's outcome, with its files unpacked into the repo; None while it's still working.
+
+    Its files stay in the outbox until sweep() clears them: a run stopped before it pushes leaves the episode waiting
+    in git, and the next run collects it again (Modal preempted the 17:05 IST run of 26 Oct mid-collect, and its
+    retry found four finished workers' files gone)."""
     key = key or episode_id
     raw = _read(f"{key}.json")
     if raw is None:
@@ -389,13 +393,12 @@ def collect(root: Path, episode_id: str, call_id: str, key: str | None = None) -
     outcome = json.loads(raw)
     if data := _read(f"{key}.tar"):
         _unpack(data, root)
-    for name in (f"{key}.tar", f"{key}.json"):
-        outbox.remove_file(name)
     return outcome
 
 
 def sweep(keep: set[str], days: float = 1) -> int:
-    """Delete outbox files that no episode waits for: from workers given up on, or whose start never reached git."""
+    """Delete outbox files a day old that no episode waits for: collected ones, and those from workers given up on or
+    whose start never reached git."""
     cutoff = time.time() - days * 86400
     removed = 0
     for entry in outbox.listdir("/"):

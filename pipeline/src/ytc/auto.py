@@ -739,6 +739,7 @@ def collect(run: Run) -> str:
     from . import cloud
 
     done = []
+    collected = set()
     for e in [e for e in episodes() if e["state"] == "remote"]:
         remote = e["remote"]
         outcome = cloud.collect(ROOT, e["id"], remote["call_id"], remote.get("key"))
@@ -750,6 +751,7 @@ def collect(run: Run) -> str:
             cloud.cancel(remote["call_id"])
             outcome = {"id": e["id"], "outcome": "unfinished", "reason": f"the worker ran over {STALE_HOURS} hours and was stopped"}
         (e["folder"] / "remote.json").unlink(missing_ok=True)
+        collected.add(remote.get("key") or e["id"])
         if outcome["outcome"] == "rejected" and (ROOT / "content" / "rejected" / e["id"]).exists():
             shutil.rmtree(e["folder"])
         outcome.setdefault("topic", remote.get("topic"))
@@ -772,7 +774,8 @@ def collect(run: Run) -> str:
         done.append(f"{e['id']} {outcome['outcome']}" + (f" ({outcome.get('reason')})" if outcome.get("reason") else ""))
     waiting = {e["remote"].get("key") or e["id"] for e in episodes() if e["state"] == "remote"}
     try:
-        if removed := cloud.sweep(waiting):
+        # What this run collected stays until its push has the episodes; a later run clears it.
+        if removed := cloud.sweep(waiting | collected):
             done.append(f"cleared {removed} files no episode was waiting for")
     except Exception as err:
         log.warning("couldn't clear old worker files: %s", err)
