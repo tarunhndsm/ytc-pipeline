@@ -968,19 +968,28 @@ def publish_waiting(run: Run) -> None:
         run.notes.append(f"Buffer is full ({len(queued)} queued); {len(waiting)} waiting")
         return
     slots = slots_per_day()
-    pace = per_day(len(queued) + len(waiting), slots)
-    if pace < slots:
-        run.notes.append(f"only {len(queued) + len(waiting)} Shorts made and unposted; scheduling {pace} a day")
-    # Sent posts count toward their day's number.
-    taken = {datetime.fromisoformat(p["dueAt"]).astimezone(AUDIENCE_TZ) for p in everything if p.get("dueAt")}
     by_post = {e["record"]["buffer_post_id"]: e for e in eps if e["record"]}
-    last = max(queued, key=lambda p: p.get("dueAt") or "", default=None)
-    last_series = by_post.get(last["id"], {}).get("series") if last else None
     today = datetime.now(AUDIENCE_TZ)
 
     def anniversary(e):
         at = (e.get("held") or {}).get("anniversary") or (e.get("topic") or {}).get("at")
         return date.fromisoformat(at) if at else None
+
+    # A Short kept for an anniversary more than three days off posts no sooner, so it isn't stock for the days before
+    # it: counted, ep206 and ep217 (31 Oct, 2 Nov) set 2 a day on 26 Oct, and ep218 took a second slot that day while
+    # Thu 29 and Fri 30 had nothing.
+    def stock(e):
+        day = anniversary(e)
+        return day is None or day <= today.date() + timedelta(days=3)
+
+    unposted = sum(stock(by_post.get(p["id"], {})) for p in queued) + sum(stock(e) for e in waiting)
+    pace = per_day(unposted, slots)
+    if pace < slots:
+        run.notes.append(f"only {unposted} Shorts made and unposted for the days ahead; scheduling {pace} a day")
+    # Sent posts count toward their day's number.
+    taken = {datetime.fromisoformat(p["dueAt"]).astimezone(AUDIENCE_TZ) for p in everything if p.get("dueAt")}
+    last = max(queued, key=lambda p: p.get("dueAt") or "", default=None)
+    last_series = by_post.get(last["id"], {}).get("series") if last else None
 
     # A Short whose post Buffer failed already lost one slot, so it takes the next one after anniversaries.
     ordered = sorted(waiting, key=lambda e: (anniversary(e) is None, anniversary(e) or date.max,
