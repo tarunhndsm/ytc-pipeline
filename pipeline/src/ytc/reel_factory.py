@@ -86,7 +86,10 @@ WAITING_MAX = 3
 # booked and none is made for it, the next story is made the older way, museum pictures with a painting only where
 # none fits, one at a time; a painted Reel still takes its slot (reel_cloud.swap_for). False: every story is painted.
 # A Reel pictured again repaints only the lines the judge faulted, so it still goes first while the neurons last.
-MUSEUM_WHEN_IDLE = True
+# Off since 26 Oct: the museums showed 2 of ak092's 12 lines, and its miniature paintings came out with painted text,
+# blood or a flag, so two tries took 29 paintings (3,825 neurons) and still left 4 lines short; a story painted line
+# by line takes 11 to 15.
+MUSEUM_WHEN_IDLE = False
 # A judge's complaint about a picture shown again, which the picture step's rules settle, not about the picture itself.
 SHOWN_AGAIN = reel_rescue.SHOWN_AGAIN
 # Where a Reel sent back to the picture step keeps its old picks, QA, render and review, out of git.
