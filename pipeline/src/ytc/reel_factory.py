@@ -14,10 +14,10 @@ GIVE_UP times for any other reason sets the Reel aside; a story the writer can't
 Before it starts a new story, a Reel the judge failed on its pictures alone is rescued (reel_rescue: rendered again
 with paintings or its own unfaulted pictures in place of the faulted ones, and booked below the bar), or, when too
 few of its pictures are left for that, goes back to the picture step once (send_back), without the pictures the judge
-found fault with; after that, paintings alone can still rescue it while the day's Cloudflare neurons last
-(reel_art.DAILY_NEURONS, counted in the state by UTC day). A rescue step that fails for any reason but an outage sets
-the Reel aside at once. A picture step left short of pictures while the day's neurons are out waits for them, and
-the factory goes on with other Reels meanwhile.
+found fault with; after that, paintings alone can still rescue it while the factory can paint: with reel_art's free
+models, or while the day's Cloudflare neurons last (reel_art.DAILY_NEURONS, counted in the state by UTC day). A rescue
+step that fails for any reason but an outage sets the Reel aside at once. A picture step left short of pictures while
+the factory can't paint waits for paintings, and the factory goes on with other Reels meanwhile.
 With --until (CircleCI stops a job at one hour), a step that can't finish by then waits for the next run. When
 BACKLOG_LOW or fewer stories the writer can read are left, reel_backlog adds new ones that check out.
 
@@ -81,6 +81,9 @@ SHORT_OF_PICTURES = re.compile(r"LookupError: no usable picture for lines")
 # Stories that may wait for paintings at once; past that a story short of pictures uses up its tries as before, so a
 # long Cloudflare outage can't turn the backlog into half-made Reels.
 WAITING_MAX = 3
+# How long the steps paint without reel_art's free models after one step's free paintings all failed
+# (reel_art.FREE_DOWN): klein alone then, while the day's neurons last, as before 28 Oct.
+FREE_WAIT = timedelta(hours=3)
 # Painted line by line (reel_art.CINEMATIC), a Reel takes about 15 paintings and the day's neurons paint two or three,
 # one of which may pass: Instagram had nothing booked from Tue 27 Oct. While one of the next three days has no Reel
 # booked and none is made for it, the next story is made the older way, museum pictures with a painting only where
@@ -292,15 +295,16 @@ def next_reset(now: datetime) -> datetime:
 
 def _spend(usage_log: Path) -> dict:
     """What a step's model calls came to (llm.record's lines): calls, tokens and US dollars at paid prices, the
-    Cloudflare neurons its paintings cost when it made any, and reel_art.OUT_OF_NEURONS when Cloudflare refused it."""
+    Cloudflare neurons its paintings cost when it made any, reel_art.OUT_OF_NEURONS when Cloudflare refused it, and
+    reel_art.FREE_DOWN when the free models painted nothing."""
     total = {"calls": 0, "tokens": 0, "usd": 0.0}
     for line in usage_log.read_text(encoding="utf-8").splitlines() if usage_log.exists() else []:
         try:
             call = json.loads(line)
         except ValueError:
             continue
-        if call.get(reel_art.OUT_OF_NEURONS):
-            total[reel_art.OUT_OF_NEURONS] = True
+        if notes := [key for key in (reel_art.OUT_OF_NEURONS, reel_art.FREE_DOWN) if call.get(key)]:
+            total |= dict.fromkeys(notes, True)
             continue
         total["calls"] += 1
         total["tokens"] += sum(call.get(k) or 0 for k in ("input_tokens", "output_tokens", "thinking_tokens"))
@@ -314,6 +318,26 @@ def _neurons_left(state: dict, now: datetime) -> float:
     """What is left today of Ankahi's share of the Cloudflare neurons (reel_art.DAILY_NEURONS), by Cloudflare's UTC
     day."""
     return max(0.0, reel_art.DAILY_NEURONS - state.get("neurons", {}).get(f"{now:%Y-%m-%d}", 0))
+
+
+def _free_art(state: dict, now: datetime) -> bool:
+    """Whether the steps may paint with reel_art's free models: none failed every painting in the last FREE_WAIT."""
+    until = state.get("free_down")
+    return reel_art.free() and not (until and datetime.fromisoformat(until) > now)
+
+
+def _can_paint(state: dict, now: datetime) -> bool:
+    """Whether a step can paint now: with the free models, or with the day's neurons."""
+    return reel_art.ready() and (_free_art(state, now) or _neurons_left(state, now) >= reel_art.NEURONS_EACH)
+
+
+def _paintings_left(state: dict, now: datetime) -> int:
+    """How many lines a step can paint now."""
+    if not reel_art.ready():
+        return 0
+    if _free_art(state, now):
+        return reel_art.MAX_PAINTED
+    return int(_neurons_left(state, now) // reel_art.NEURONS_EACH)
 
 
 def _add_neurons(state: dict, now: datetime, neurons: float) -> None:
@@ -400,17 +424,21 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             os.environ["YTC_MAX_REUSED"] = str(LAST_TRY_REUSED)
         if step in ("pictures", "rescue"):
             os.environ["YTC_PAINT_NEURONS"] = str(_neurons_left(state, datetime.now(timezone.utc)))
+            os.environ["YTC_FREE_ART"] = "1" if _free_art(state, datetime.now(timezone.utc)) else "0"
         # Its script asks for museum pictures, so each step of a story made the older way is run the older way.
         if mine.get("museum"):
             os.environ["YTC_CINEMATIC"] = "0"
         try:
             code, tail = _run(command, logs / f"{reel}_{step}.log", timeout)
         finally:
-            for name in ("YTC_USAGE_LOG", "YTC_MAX_REUSED", "YTC_PAINT_NEURONS", "YTC_CINEMATIC"):
+            for name in ("YTC_USAGE_LOG", "YTC_MAX_REUSED", "YTC_PAINT_NEURONS", "YTC_FREE_ART", "YTC_CINEMATIC"):
                 os.environ.pop(name, None)
         # Every try counts, failed ones too: they cost the same.
         spent = _spend(usage_log)
         refused = spent.pop(reel_art.OUT_OF_NEURONS, False)
+        if free_down := spent.pop(reel_art.FREE_DOWN, False):
+            state["free_down"] = (datetime.now(timezone.utc) + FREE_WAIT).isoformat(timespec="seconds")
+            print(f"{reel} {step}: the free models painted nothing; klein alone until {state['free_down']}", flush=True)
         _add_spend(mine.setdefault("usage", {}).setdefault(step, {}), spent)
         _add_spend(state.setdefault("spend", {}).setdefault(f"{datetime.now(IST):%Y-%m-%d}", {}), spent)
         if spent.get("neurons"):
@@ -457,24 +485,24 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
             done["why"] = f"{step} hit an outage or network error ({transient[step]} of {TRANSIENT_GIVE_UP}): {last}"
             done["transient"] = True
             return "failed"
-        if step == "rescue" and refused:
+        if step == "rescue" and (refused or free_down) and not _can_paint(state, datetime.now(timezone.utc)):
             # It failed for want of the paintings Cloudflare refused, so it goes back among the failed Reels (supply
-            # counts one without "pushed" as half-made), and decide offers it again once the day's neurons are back.
+            # counts one without "pushed" as half-made), and decide offers it again once it can paint.
             rescue = mine.pop("rescue", None) or {}
             mine["pushed"] = rescue.get("pushed") or datetime.now(timezone.utc).isoformat(timespec="seconds")
             done["why"] = f"rescue needs paintings Cloudflare refuses until the neurons are back: {last}"
             return "failed"
-        # Painted line by line, a story can't be pictured at all until the neurons are back, and decide starts none
-        # meanwhile, so it always waits: counted as failures, a new story was set aside every few minutes (24 Oct).
+        # Painted line by line, a story can't be pictured at all until the factory can paint again, and decide starts
+        # none meanwhile, so it always waits: counted as failures, a new story was set aside every few minutes (24 Oct).
         if (step == "pictures" and SHORT_OF_PICTURES.search(last) and reel_art.ready()
-                and _neurons_left(state, datetime.now(timezone.utc)) < reel_art.NEURONS_EACH
+                and not _can_paint(state, datetime.now(timezone.utc))
                 and (reel_art.CINEMATIC or (transient.get(step, 0) < TRANSIENT_GIVE_UP
                      and sum(bool(other.get("waits")) for other in state["reels"].values()) < WAITING_MAX))):
             # Another try today finds the same museum pictures (ak077's tries on 21 Oct each came up 8 lines short),
             # and a story set aside comes back only by hand: it waits for the paintings (decide).
             transient[step] = transient.get(step, 0) + 1
             mine["waits"] = "paintings"
-            done["why"] = f"pictures wait for the day's neurons, for paintings of the lines no museum picture shows: {last}"
+            done["why"] = f"pictures wait until Cloudflare paints again (neurons spent, free models down): {last}"
             return "failed"
         # A rescue that can't be done (too few pictures left, a render that fails its checks) won't be done by trying
         # again, and the new stories would wait behind it.
@@ -528,9 +556,8 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     if (left := readable_left()) <= 1:
         done["alerts"].append(("backlog", f"only {left} stories the writer can read are left in the backlog, and "
                                f"refilling it didn't work ({state.get('refill_error') or 'no new story checked out'})"))
-    # A story the picture step was short of while the day's neurons were out goes on once they're back.
-    paintable = [reel for reel in found.get("waiting", [])
-                 if reel_art.ready() and _neurons_left(state, now) >= reel_art.NEURONS_EACH]
+    # A story the picture step was short of while it couldn't paint goes on once it can.
+    paintable = [reel for reel in found.get("waiting", []) if _can_paint(state, now)]
     # One made the older way first: it paints at most 8 lines a try (reel_art.MAX_PAINTED), a painted one up to 15.
     paintable.sort(key=lambda reel: not state["reels"].get(reel, {}).get("museum"))
     short = len(found["pending"]) < PENDING_MIN or len(found["booked"]) + len(found["pending"]) < AHEAD_MIN
@@ -546,8 +573,9 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     # story, and the rest passed.
     if rescues := reel_rescue.to_render(found["failed"], stored):
         return rescues[0], done | {"decision": "rescuing"}
-    # Every line is painted (reel_art.CINEMATIC), so with the day's neurons spent no story can be pictured.
-    starved = reel_art.CINEMATIC and reel_art.ready() and _neurons_left(state, now) < reel_art.NEURONS_EACH
+    # Every line is painted (reel_art.CINEMATIC), so with the day's neurons spent and the free models down no story
+    # can be pictured.
+    starved = reel_art.CINEMATIC and reel_art.ready() and not _can_paint(state, now)
     # A day ahead with nothing for it gets a story made the older way (MUSEUM_WHEN_IDLE), even with the day's
     # neurons spent: the museums may show every line.
     museum = (MUSEUM_WHEN_IDLE and reel_art.CINEMATIC and len(found["pending"]) < len(idle)
@@ -556,14 +584,16 @@ def decide(state: dict, now: datetime, force: bool, media: Path | None = None,
     if again and not capped and not starved:
         return again[0], done | {"decision": "picturing again"}
     # Too few of its pictures are left and it can't go back to the picture step: paintings stand in for them.
-    if reel_art.ready() and (paintings := int(_neurons_left(state, now) // reel_art.NEURONS_EACH)) and (
+    if (paintings := _paintings_left(state, now)) and (
             rescues := reel_rescue.to_render([r for r in found["failed"] if r not in again], stored, paintings)):
         return rescues[0], done | {"decision": "rescuing"}
     if capped:
         return None, done | {"decision": f"already made {DAILY_CAP} today"}
     if starved and not museum:
-        return None, done | {"decision": "today's neurons are spent: no story can be painted until Cloudflare's "
-                                         "reset at 05:30 IST"}
+        down = state.get("free_down") if reel_art.free() else None
+        return None, done | {"decision": "today's neurons are spent and the free models are " + (
+            f"down until {datetime.fromisoformat(down).astimezone(IST):%H:%M} IST" if down else "off") +
+            ": no story can be painted until then or Cloudflare's reset at 05:30 IST"}
     if not reel_writer.next_story():
         done["alerts"].append(("backlog", "the backlog has no story the writer can read; no Reel made"))
         return None, done | {"decision": "no readable story"}

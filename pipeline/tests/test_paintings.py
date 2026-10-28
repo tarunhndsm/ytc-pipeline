@@ -16,6 +16,11 @@ from PIL import Image
 from ytc import publish, reel_art, reel_factory, reel_pictures, reel_rescue, reels
 
 KEYS = {"IG_CLOUDFLARE_ACCOUNT_ID": "account", "IG_CLOUDFLARE_API_TOKEN": "token"}
+# Klein alone, as the steps paint while the free models are down (reel_factory.FREE_WAIT).
+KLEIN_ONLY = {"YTC_FREE_ART": "0"}
+# A factory state whose free models are down.
+DOWN = {"free_down": "2099-01-01T00:00:00+00:00"}
+KLEIN, LIGHTNING, SDXL = (*reel_art.MODELS, *reel_art.FREE_MODELS)
 
 
 def _museum(n: int) -> dict:
@@ -33,10 +38,10 @@ def _painting(n: int) -> dict:
 
 
 class PaintLinesTests(unittest.TestCase):
-    """How many lines a picture try or a rescue gets painted."""
+    """How many lines a picture try or a rescue gets painted by klein alone."""
 
     def setUp(self) -> None:
-        env = patch.dict(os.environ, KEYS)
+        env = patch.dict(os.environ, KEYS | KLEIN_ONLY)
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("YTC_PAINT_NEURONS", None)
@@ -46,10 +51,11 @@ class PaintLinesTests(unittest.TestCase):
         painter.start()
         self.addCleanup(painter.stop)
 
-    def _paint(self, reel, number, beat):
+    def _paint(self, reel, number, beat, paid=True, refused=None):
         if number in self.out:
-            raise reel_art.OutOfNeurons("daily free allocation exceeded")
-        return {"ref": f"ai:{reel}-{number:02d}-1"}, reel_art.NEURONS_EACH
+            refused.append("paid")
+            return None, 0.0
+        return {"ref": f"ai:{reel}-{number:02d}-1", "artist": "FLUX.2 klein"}, reel_art.NEURONS_EACH
 
     def test_nothing_is_painted_without_the_cloudflare_keys(self) -> None:
         with patch.dict(os.environ, {"IG_CLOUDFLARE_API_TOKEN": ""}):
@@ -91,21 +97,107 @@ class PaintLinesTests(unittest.TestCase):
 
     def test_flagged_paintings_come_off_the_neurons_too(self) -> None:
         costs = {1: (None, 264.0), 2: ({"ref": "ai:ak999-02-1"}, 263.76)}
-        reel_art.paint.side_effect = lambda reel, number, beat: costs[number]
+        reel_art.paint.side_effect = lambda reel, number, beat, *rest: costs[number]
         with patch.dict(os.environ, {"YTC_PAINT_NEURONS": "1000"}):
             made = reel_art.paint_lines("ak999", self.beats, [1, 2])
             self.assertAlmostEqual(float(os.environ["YTC_PAINT_NEURONS"]), 1000 - 264.0 - 263.76)
         self.assertEqual(made, {2: {"ref": "ai:ak999-02-1"}})
 
+    def test_every_line_klein_paints_may_name_a_god(self) -> None:
+        beats = [{"text": "line 1", "picture": "Lord Krishna smiles"}, {"text": "line 2", "picture": "Kunti"}]
+        reel_art.paint_lines("ak999", beats, [1, 2])
+        self.assertEqual(sorted(c.args[1] for c in reel_art.paint.call_args_list if c.args[3]), [1, 2])
 
-class PaintTests(unittest.TestCase):
-    """One painting: made, hosted, credited as AI, and its neurons counted."""
+
+class FreePaintLinesTests(unittest.TestCase):
+    """With the free models, every line is painted whatever the neurons left, and klein paints only the lines that
+    name no god, as far as the neurons go."""
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.usage = Path(tmp.name) / "usage.jsonl"
         env = patch.dict(os.environ, KEYS | {"YTC_USAGE_LOG": str(self.usage)})
+        env.start()
+        self.addCleanup(env.stop)
+        for name in ("YTC_PAINT_NEURONS", "YTC_FREE_ART"):
+            os.environ.pop(name, None)
+        self.beats = [{"text": f"line {n}", "picture": brief} for n, brief in enumerate(
+            ("Lord Krishna smiles at Rukmini", "Kunti at the river", "Hanuman leaps to Lanka", "King Pandu hunts a deer",
+             "Karna gives away his armour", "Goddess Ambika's shrine"), start=1)]
+        self.paid: dict[int, bool] = {}
+        self.free_fails = False
+        painter = patch.object(reel_art, "paint", side_effect=self._paint)
+        painter.start()
+        self.addCleanup(painter.stop)
+
+    def _paint(self, reel, number, beat, paid=True, refused=None):
+        self.paid[number] = paid
+        if paid and "paid" not in refused:
+            return {"ref": f"ai:{reel}-{number:02d}-1", "artist": "FLUX.2 klein"}, reel_art.NEURONS_EACH
+        if self.free_fails:
+            return None, 0.0
+        return {"ref": f"ai:{reel}-{number:02d}-2", "artist": "SDXL-Lightning"}, 0.0
+
+    def _notes(self) -> dict:
+        return reel_factory._spend(self.usage)
+
+    def test_every_line_is_painted_with_no_neurons_left(self) -> None:
+        with patch.dict(os.environ, {"YTC_PAINT_NEURONS": "0.0"}):
+            made = reel_art.paint_lines("ak999", self.beats, [1, 2, 3, 4, 5, 6])
+        self.assertEqual(sorted(made), [1, 2, 3, 4, 5, 6])
+        self.assertFalse(any(self.paid.values()))
+
+    def test_klein_paints_the_lines_that_name_no_god_as_far_as_the_neurons_go(self) -> None:
+        with patch.dict(os.environ, {"YTC_PAINT_NEURONS": str(2 * reel_art.NEURONS_EACH + 30)}):
+            made = reel_art.paint_lines("ak999", self.beats, [5, 1, 2, 3, 4, 6])
+            self.assertAlmostEqual(float(os.environ["YTC_PAINT_NEURONS"]), 30)
+        self.assertEqual(sorted(made), [1, 2, 3, 4, 5, 6])
+        self.assertEqual(sorted(n for n, paid in self.paid.items() if paid), [2, 5])
+
+    def test_klein_refused_ends_its_day_but_not_the_paintings(self) -> None:
+        def refused_klein(reel, number, beat, paid=True, refused=None):
+            if paid:
+                refused.append("paid")
+            return {"ref": f"ai:{reel}-{number:02d}-2", "artist": "SDXL-Lightning"}, 0.0
+
+        reel_art.paint.side_effect = refused_klein
+        self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [1, 2, 3])), [1, 2, 3])
+        self.assertEqual(os.environ["YTC_PAINT_NEURONS"], "0.0")
+        self.assertEqual((self._notes().get(reel_art.OUT_OF_NEURONS), self._notes().get(reel_art.FREE_DOWN)),
+                         (True, None))
+
+    def test_free_models_that_paint_nothing_are_reported_down(self) -> None:
+        self.free_fails = True
+        self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [1, 2, 3])), [2])
+        self.assertTrue(self._notes()[reel_art.FREE_DOWN])
+
+    def test_free_models_that_paint_one_line_are_not_down(self) -> None:
+        reel_art.paint.side_effect = lambda reel, number, beat, paid, refused: (
+            ({"ref": "ai:x", "artist": "SDXL-Lightning"}, 0.0) if number == 3 else (None, 0.0))
+        self.assertEqual(sorted(reel_art.paint_lines("ak999", self.beats, [1, 3])), [3])
+        self.assertNotIn(reel_art.FREE_DOWN, self._notes())
+
+    def test_the_gods_are_told_from_the_mortals(self) -> None:
+        for brief in ("Lord Balarama holding his plough", "Parashurama raises his axe", "Rama strings the bow",
+                      "Hanumanji leaps", "Sita in the Ashoka grove", "Rukmini kneels before Goddess Ambika",
+                      "Yamaraja takes Satyavan", "Brahma's court"):
+            self.assertTrue(reel_art.GODS.search(brief), brief)
+        for brief in ("Prince Rukmi draws his sword", "Kunti at the river", "A Brahmin at the gate", "Karna and Arjuna",
+                      "King Jarasandha", "Gandhari blindfolds herself"):
+            self.assertFalse(reel_art.GODS.search(brief), brief)
+
+
+class _Painting(unittest.TestCase):
+    """A painting's hosting faked, the Cloudflare keys set, and `env` on top."""
+
+    env: dict = {}
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.usage = Path(tmp.name) / "usage.jsonl"
+        env = patch.dict(os.environ, KEYS | {"YTC_USAGE_LOG": str(self.usage)} | self.env)
         env.start()
         self.addCleanup(env.stop)
         picture = io.BytesIO()
@@ -120,6 +212,12 @@ class PaintTests(unittest.TestCase):
         self.assertTrue(path.exists())
         self.hosted.append(path)
         return f"https://res.cloudinary.com/demo/{public_id}.jpg"
+
+
+class PaintTests(_Painting):
+    """One painting by klein alone: made, hosted, credited as AI, and its neurons counted."""
+
+    env = KLEIN_ONLY
 
     def test_a_painting_is_hosted_and_credited_as_made_with_ai(self) -> None:
         with patch.object(reel_art, "_run", return_value=(self.jpeg, 131.88)):
@@ -233,6 +331,88 @@ class PaintTests(unittest.TestCase):
         self.assertIn("never a crown", reel_art.prompt({"picture": "Sage Durvasa blesses young Kunti"}))
 
 
+class FreePaintTests(_Painting):
+    """One painting with the free models there: klein first when asked, once, then the free models."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        os.environ.pop("YTC_FREE_ART", None)
+        self.asked: list[tuple[str, str]] = []
+        self.answers: dict[str, list] = {}
+
+    def _run(self, model, text, seed):
+        self.asked.append((model, text))
+        answer = (self.answers.get(model) or [(self.jpeg, 0.0 if model in reel_art.FREE_MODELS else 131.88)]).pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def _paint(self, brief: str, number: int = 3, paid: bool = True, refused: list | None = None):
+        with patch.object(reel_art, "_run", side_effect=self._run):
+            return reel_art.paint("ak999", number, {"picture": brief}, paid, refused)
+
+    def test_a_line_klein_paints_is_painted_by_klein(self) -> None:
+        hit, spent = self._paint("Kunti at the river")
+        self.assertEqual(([m for m, _ in self.asked], hit["artist"], spent), ([KLEIN], "FLUX.2 klein", 131.88))
+
+    def test_a_flagged_painting_goes_to_the_free_models_without_another_klein_try(self) -> None:
+        self.answers[KLEIN] = [reel_art.Flagged("HTTP 400: AiError: Your output has been flagged.", 131.88)]
+        hit, spent = self._paint("Kunti at the river")
+        self.assertEqual(([m for m, _ in self.asked], hit["artist"]), ([KLEIN, LIGHTNING], "SDXL-Lightning"))
+        self.assertAlmostEqual(spent, 131.88)
+        self.assertTrue(hit["ref"].startswith("ai:ak999-03-"))
+        self.assertEqual(hit["license"], reel_art.LICENSE)
+
+    def test_a_line_klein_isnt_asked_for_is_painted_free_with_the_short_prompt(self) -> None:
+        hit, spent = self._paint("Hanuman leaps to Lanka", number=1, paid=False)
+        self.assertEqual(([m for m, _ in self.asked], hit["artist"], spent), ([LIGHTNING], "SDXL-Lightning", 0.0))
+        text = self.asked[0][1]
+        self.assertTrue(text.startswith(reel_art.FREE_FIRST + "Hanuman leaps to Lanka. Hanuman, the vanara god"), text)
+        self.assertTrue(text.endswith(reel_art.FREE_STYLE))
+        self.assertFalse(self.usage.exists(), "a free painting was logged with neurons")
+
+    def test_klein_refused_for_the_neurons_hands_the_line_to_the_free_models(self) -> None:
+        refused: list[str] = []
+        self.answers[KLEIN] = [reel_art.OutOfNeurons("4006: daily free allocation of 10,000 neurons used up")]
+        hit, _ = self._paint("Kunti at the river", refused=refused)
+        self.assertEqual((refused, hit["artist"]), (["paid"], "SDXL-Lightning"))
+        self._paint("Kunti at the well", refused=refused)
+        self.assertEqual([m for m, _ in self.asked], [KLEIN, LIGHTNING, LIGHTNING])
+
+    def test_lightning_failing_leaves_the_line_to_sdxl(self) -> None:
+        self.answers[LIGHTNING] = [reel_art.Refused("HTTP 503: capacity")]
+        hit, _ = self._paint("Hanuman leaps to Lanka", paid=False)
+        self.assertEqual(([m for m, _ in self.asked], hit["artist"]), ([LIGHTNING, SDXL], "Stable Diffusion XL"))
+
+    def test_free_models_refused_for_the_neurons_arent_asked_again(self) -> None:
+        refused: list[str] = []
+        self.answers[LIGHTNING] = [reel_art.OutOfNeurons("4006: neurons used up")]
+        self.assertEqual(self._paint("Hanuman leaps to Lanka", paid=False, refused=refused), (None, 0.0))
+        self.assertEqual((refused, [m for m, _ in self.asked]), (["free"], [LIGHTNING]))
+
+    def test_a_free_model_is_sent_json_with_a_negative_prompt_and_answers_with_the_png(self) -> None:
+        answer = MagicMock(status_code=200, headers={"content-type": "image/png", "cf-ai-neurons": "0.00"},
+                           content=self.jpeg)
+        with patch.object(reel_art.requests, "post", return_value=answer) as post:
+            self.assertEqual(reel_art._run(LIGHTNING, "a painting", 5), (self.jpeg, 0.0))
+        body = post.call_args.kwargs["json"]
+        self.assertEqual((body["seed"], body["width"], body["height"], body["negative_prompt"]),
+                         (5, reel_art.WIDTH, reel_art.HEIGHT, reel_art.NEGATIVE))
+        self.assertIn("text", body["negative_prompt"])
+
+    def test_a_free_models_429_is_its_rate_and_not_the_days_neurons(self) -> None:
+        answer = MagicMock(status_code=429, text='{"errors": [{"message": "Capacity temporarily exceeded"}]}',
+                           headers={})
+        answer.json.return_value = {"errors": [{"message": "Capacity temporarily exceeded", "code": 3040}]}
+        with patch.object(reel_art.requests, "post", return_value=answer):
+            with self.assertRaises(reel_art.Refused) as rate:
+                reel_art._run(LIGHTNING, "a painting", 1)
+            self.assertNotIsInstance(rate.exception, reel_art.OutOfNeurons)
+            answer.text = "you have used up your daily free allocation of 10,000 neurons"
+            with self.assertRaises(reel_art.OutOfNeurons):
+                reel_art._run(LIGHTNING, "a painting", 1)
+
+
 class PictureStepTests(unittest.TestCase):
     """Which lines the picture step paints, and how the caption credits the paintings."""
 
@@ -244,14 +424,16 @@ class PictureStepTests(unittest.TestCase):
             reel_pictures.painted("ak999", beats, chosen, fits)
         self.assertEqual(paint.call_args.args[2], [1, 3, 4])
 
-    def test_a_painting_the_framing_check_turns_down_is_painted_once_more(self) -> None:
+    def test_a_painting_the_framing_check_turns_down_is_painted_again_up_to_paint_tries(self) -> None:
         beats = [{"text": f"line {n}", "picture": f"brief {n}", "role": "story"} for n in range(1, 7)]
-        paintings = [{3: _painting(3), 5: _painting(5)}, {5: _painting(5) | {"ref": "ai:ak999-05-8"}}]
-        framed = [{3: _painting(3)}, {}]
+        again = reel_pictures.PAINT_TRIES - 1
+        paintings = [{3: _painting(3), 5: _painting(5)}] + [{5: _painting(5) | {"ref": f"ai:ak999-05-{n}"}}
+                                                            for n in range(again)]
+        framed = [{3: _painting(3)}] + [{}] * again
         with (patch.object(reel_art, "paint_lines", side_effect=paintings) as paint,
               patch.object(reel_pictures, "frame_all", side_effect=framed) as frame):
             self.assertEqual(sorted(reel_pictures.paint_framed("ak999", beats, [3, 5, 6])), [3])
-        self.assertEqual([c.args[2] for c in paint.call_args_list], [[3, 5, 6], [5]])
+        self.assertEqual([c.args[2] for c in paint.call_args_list], [[3, 5, 6]] + [[5]] * again)
         self.assertEqual(sorted(frame.call_args_list[1].args[1]), [5])
         self.assertIn("letters or script painted on one", frame.call_args.args[4])
 
@@ -368,17 +550,19 @@ class NeuronTests(unittest.TestCase):
 
 
 class RefusedRescueTests(unittest.TestCase):
-    """A rescue Cloudflare refused the paintings for waits for the neurons; any other failed rescue is set aside."""
+    """A rescue Cloudflare refused every painting for waits until it paints again; any other failed rescue is set
+    aside."""
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.logs, self.refuse = Path(tmp.name) / "logs", True
+        self.logs, self.notes = Path(tmp.name) / "logs", [reel_art.OUT_OF_NEURONS, reel_art.FREE_DOWN]
         (Path(tmp.name) / "content" / "ak902").mkdir(parents=True)
         for patcher in (
                 patch.object(reels, "REELS", Path(tmp.name) / "content"),
                 patch.object(reel_factory, "_steps", return_value=[("rescue", lambda: False, ["true"], 60)]),
-                patch.object(reel_factory, "_run", side_effect=self._run)):
+                patch.object(reel_factory, "_run", side_effect=self._run),
+                patch.object(reel_art, "ready", return_value=True)):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.state = {"reels": {"ak902": {"fails": {}, "transient": {}, "rescue": {
@@ -386,10 +570,9 @@ class RefusedRescueTests(unittest.TestCase):
 
     def _run(self, command, log, timeout):
         log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text("line 2: Cloudflare's free neurons for today are spent\n", encoding="utf-8")
-        if self.refuse:
-            Path(os.environ["YTC_USAGE_LOG"]).write_text(json.dumps(
-                {"model": "cloudflare:refused", reel_art.OUT_OF_NEURONS: True}) + "\n", encoding="utf-8")
+        log.write_text("line 2: Cloudflare refused FLUX.2 klein for the day's neurons\n", encoding="utf-8")
+        Path(os.environ["YTC_USAGE_LOG"]).write_text("".join(json.dumps({"model": "cloudflare:refused", note: True})
+                                                             + "\n" for note in self.notes), encoding="utf-8")
         return 1, "ValueError: only 3 of its pictures weren't faulted; at least 8 are needed"
 
     def test_a_rescue_cloudflare_refused_waits_among_the_failed_reels(self) -> None:
@@ -398,17 +581,33 @@ class RefusedRescueTests(unittest.TestCase):
         self.assertEqual(result, "failed")
         self.assertEqual((mine.get("rescue"), mine.get("set_aside"), mine["pushed"]),
                          (None, None, "2026-10-20T21:35:20+00:00"))
-        self.assertEqual(reel_factory._neurons_left(self.state, datetime.now(timezone.utc)), 0)
+        now = datetime.now(timezone.utc)
+        self.assertEqual((reel_factory._neurons_left(self.state, now), reel_factory._free_art(self.state, now)),
+                         (0, False))
+        self.assertTrue(reel_factory._free_art(self.state, now + reel_factory.FREE_WAIT + timedelta(minutes=1)))
 
     def test_a_rescue_that_fails_for_another_reason_is_set_aside(self) -> None:
-        self.refuse = False
+        self.notes = []
         self.assertEqual(reel_factory.make("ak902", self.state, self.logs, {"steps": [], "alerts": []}), "set aside")
         self.assertIn("set_aside", self.state["reels"]["ak902"])
 
+    def test_klein_refused_with_the_free_models_up_is_another_reason(self) -> None:
+        self.notes = [reel_art.OUT_OF_NEURONS]
+        self.assertEqual(reel_factory.make("ak902", self.state, self.logs, {"steps": [], "alerts": []}), "set aside")
+        self.assertTrue(reel_factory._can_paint(self.state, datetime.now(timezone.utc)))
+
+    def test_the_painting_steps_are_told_whether_the_free_models_may_paint(self) -> None:
+        seen, run, self.notes = [], self._run, []
+        reel_factory._run.side_effect = lambda *args: (seen.append(os.environ.get("YTC_FREE_ART")), run(*args))[1]
+        reel_factory.make("ak902", self.state, self.logs, {"steps": [], "alerts": []})
+        reel_factory.make("ak902", self.state | DOWN, self.logs, {"steps": [], "alerts": []})
+        self.assertEqual(seen, ["1", "0"])
+        self.assertNotIn("YTC_FREE_ART", os.environ)
+
 
 class WaitingPicturesTests(unittest.TestCase):
-    """A picture step short of pictures while the day's neurons are out waits for them instead of using up its
-    tries, and the factory takes it up again once they're back."""
+    """A picture step short of pictures while the day's neurons are out and the free models down waits for them
+    instead of using up its tries, and the factory takes it up again once it can paint."""
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -424,11 +623,15 @@ class WaitingPicturesTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         today = f"{datetime.now(timezone.utc):%Y-%m-%d}"
         self.state = {"reels": {"ak903": {"fails": {}, "transient": {}}}, "made": {},
-                      "neurons": {today: reel_art.DAILY_NEURONS}}
+                      "neurons": {today: reel_art.DAILY_NEURONS}} | DOWN
+        self.free_down = False
 
     def _run(self, command, log, timeout):
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("no painting for lines [2, 3]: today's 6000 neurons are spent\n", encoding="utf-8")
+        if self.free_down:
+            Path(os.environ["YTC_USAGE_LOG"]).write_text(json.dumps(
+                {"model": "cloudflare:free-refused", reel_art.FREE_DOWN: True}) + "\n", encoding="utf-8")
         return 1, "LookupError: no usable picture for lines [2, 3, 4, 5, 6, 7, 9, 10]"
 
     def _make(self) -> str:
@@ -445,6 +648,20 @@ class WaitingPicturesTests(unittest.TestCase):
         self.assertEqual(self._make(), "failed")
         mine = self.state["reels"]["ak903"]
         self.assertEqual((mine.get("waits"), mine["fails"]), (None, {"pictures": 1}))
+
+    def test_with_the_free_models_up_it_is_a_failed_try_without_neurons_too(self) -> None:
+        self.state.pop("free_down")
+        self.assertEqual(self._make(), "failed")
+        mine = self.state["reels"]["ak903"]
+        self.assertEqual((mine.get("waits"), mine["fails"]), (None, {"pictures": 1}))
+
+    def test_free_models_that_painted_nothing_make_it_wait_and_rest_for_free_wait(self) -> None:
+        self.state.pop("free_down")
+        self.free_down = True
+        self.assertEqual(self._make(), "failed")
+        self.assertEqual(self.state["reels"]["ak903"].get("waits"), "paintings")
+        until = datetime.fromisoformat(self.state["free_down"]) - datetime.now(timezone.utc)
+        self.assertLess(abs(until - reel_factory.FREE_WAIT), timedelta(minutes=1))
 
     def test_without_cloudflare_it_is_a_failed_try(self) -> None:
         with patch.object(reel_art, "ready", return_value=False):
@@ -483,10 +700,12 @@ class WaitingPicturesTests(unittest.TestCase):
                 patch.object(reel_art, "CINEMATIC", True), \
                 patch.object(reel_factory, "MUSEUM_WHEN_IDLE", False):
             spent = {"reels": {}, "made": {}, "neurons": {"2026-10-24": reel_art.DAILY_NEURONS}}
-            reel, done = reel_factory.decide(spent, now, False)
+            reel, done = reel_factory.decide(spent | DOWN, now, False)
             self.assertEqual(reel, None)
-            self.assertIn("neurons are spent", done["decision"])
-            reel, done = reel_factory.decide({"reels": {}, "made": {}, "neurons": {}}, now, False)
+            self.assertIn("neurons are spent and the free models are down until 05:30 IST", done["decision"])
+            reel, done = reel_factory.decide(spent, now, False)
+            self.assertEqual((reel, done["decision"]), ("ak904", "picturing again"))
+            reel, done = reel_factory.decide({"reels": {}, "made": {}, "neurons": {}} | DOWN, now, False)
             self.assertEqual((reel, done["decision"]), ("ak904", "picturing again"))
             found["failed"] = []
             reel, done = reel_factory.decide({"reels": {}, "made": {}, "neurons": {}}, now, False)
@@ -501,9 +720,11 @@ class WaitingPicturesTests(unittest.TestCase):
                 patch.object(reel_factory, "supply", return_value=found), \
                 patch.object(reel_factory, "readable_left", return_value=10):
             spent = {"reels": {}, "made": {}, "neurons": {"2026-10-22": reel_art.DAILY_NEURONS}}
-            reel, done = reel_factory.decide(spent, now, False)
+            reel, done = reel_factory.decide(spent | DOWN, now, False)
             self.assertEqual((reel, done["decision"]), (None, "supply is enough"))
-            reel, done = reel_factory.decide({"reels": {}, "made": {}, "neurons": {}}, now, False)
+            reel, done = reel_factory.decide({"reels": {}, "made": {}, "neurons": {}} | DOWN, now, False)
+            self.assertEqual((reel, done["decision"]), ("ak903", "resuming with paintings"))
+            reel, done = reel_factory.decide(spent, now, False)
         self.assertEqual((reel, done["decision"]), ("ak903", "resuming with paintings"))
 
     def test_resuming_ends_the_wait(self) -> None:
@@ -541,13 +762,17 @@ class DecideTests(unittest.TestCase):
         self.offered.append(list(failed))
         return ["ak902"] if paintings and "ak902" in failed else []
 
-    def test_a_reel_that_needs_paintings_is_rescued_while_the_neurons_last(self) -> None:
-        reel, done = reel_factory.decide({"reels": {}, "made": {}}, self.now, False)
-        self.assertEqual((reel, done["decision"]), ("ak902", "rescuing"))
-        self.assertEqual(self.passes, [0, reel_art.DAILY_NEURONS // reel_art.NEURONS_EACH])
+    def test_a_reel_that_needs_paintings_is_rescued_while_the_factory_can_paint(self) -> None:
+        spent = {"reels": {}, "made": {}, "neurons": {"2026-10-20": reel_art.DAILY_NEURONS}}
+        for state, paintings in ((spent, reel_art.MAX_PAINTED),
+                                 ({"reels": {}, "made": {}} | DOWN, reel_art.DAILY_NEURONS // reel_art.NEURONS_EACH)):
+            self.passes = []
+            reel, done = reel_factory.decide(state, self.now, False)
+            self.assertEqual((reel, done["decision"]), ("ak902", "rescuing"))
+            self.assertEqual(self.passes, [0, paintings])
 
-    def test_no_paint_pass_once_todays_neurons_are_spent(self) -> None:
-        state = {"reels": {}, "made": {}, "neurons": {"2026-10-20": reel_art.DAILY_NEURONS}}
+    def test_no_paint_pass_once_todays_neurons_are_spent_and_the_free_models_are_down(self) -> None:
+        state = {"reels": {}, "made": {}, "neurons": {"2026-10-20": reel_art.DAILY_NEURONS}} | DOWN
         reel, done = reel_factory.decide(state, self.now, False)
         self.assertEqual(reel, None)
         self.assertEqual(self.passes, [0])

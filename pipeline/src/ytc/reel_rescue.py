@@ -12,7 +12,7 @@ the first frame in the feed, takes the first unfaulted picture. A Reel with no p
 (`mark`, from the reels run). Otherwise the factory renders it again (`prepare`, reel_tools render, `seal`) with its
 render's own narration, so the framing check is the only Gemini call, and without the QA step, whose spares the
 judge never saw. A Reel left with too few pictures of its own is rescued with paintings only once it can't go back
-to the picture step (reel_factory.decide), and while the day's neurons allow them.
+to the picture step (reel_factory.decide), and while the factory can paint (reel_factory._can_paint).
 
 The record (reels.RESCUE) names the video it vouches for. A rescued Reel isn't turned down (reel_writer.turned_down),
 so the next Reel answers its question and the runs bring its render; reel_cloud books it below the bar, after the
@@ -122,8 +122,8 @@ def paintable(folder: Path) -> list[int]:
 
 
 def paintings(folder: Path) -> dict[int, dict]:
-    """Paintings for the faulted lines that passed the framing check, by line; {} when Cloudflare isn't set up, the
-    day's neurons are spent or no model made one."""
+    """Paintings for the faulted lines that passed the framing check, by line; {} when Cloudflare isn't set up or no
+    model made one."""
     if not reel_art.ready() or not (lines := paintable(folder)):
         return {}
     beats = json.loads((folder / reel_writer.SCRIPT).read_text(encoding="utf-8"))["script"]["beats"]
@@ -198,7 +198,7 @@ def plan(folder: Path, painted: dict[int, dict] | None = None) -> tuple[dict, di
 def to_render(failed: list[str], stored: set[str] | None = None, paintings: int = 0) -> list[str]:
     """Of the Reels the judge failed, those the factory can rescue by rendering them again (with `stored`, only those
     whose render is in the releases), the one keeping the most pictures first, then the newest. With `paintings`
-    (as many as the day's neurons allow), only those that need paintings to keep enough pictures of their own."""
+    (as many as the factory can paint now), only those that need paintings to keep enough pictures of their own."""
     found = []
     for reel in failed:
         folder = reels.REELS / reel

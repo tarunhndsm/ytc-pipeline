@@ -170,8 +170,10 @@ class MuseumWhenIdleTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def _decide(self, mine: dict | None = None, spent: bool = False) -> tuple[str | None, dict]:
+        """`spent`: nothing can paint, the day's neurons spent and the free models down."""
         neurons = {f"{self.now:%Y-%m-%d}": reel_art.DAILY_NEURONS} if spent else {}
-        return reel_factory.decide({"reels": mine or {}, "made": {}, "neurons": neurons}, self.now, False)
+        down = {"free_down": "2099-01-01T00:00:00+00:00"} if spent else {}
+        return reel_factory.decide({"reels": mine or {}, "made": {}, "neurons": neurons} | down, self.now, False)
 
     def test_a_day_ahead_with_nothing_for_it_gets_a_story_made_the_older_way_neurons_or_not(self) -> None:
         for spent in (True, False):

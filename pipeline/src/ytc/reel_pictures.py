@@ -393,10 +393,12 @@ PAINTED_RULES = """
 These pictures are new paintings, not museum pictures: ok is also false for any letters or script painted on one (a
 caption, a label, an inscription, a signature), even small ones, for a face or body painted wrong (melted or
 doubled features, extra fingers, arms or legs where the figure has none), for blood, a wound, a dead, cut or broken
-body or parts of one, and for the sign of another faith (a cross, a crescent and star). However lifelike, their kind
-is painting.
+body or parts of one, for the sign of another faith (a cross, a crescent and star), and for anything of today's world
+(a modern city or its lights, a car, modern clothes). However lifelike, their kind is painting.
 """
-PAINT_TRIES = 2
+# With reel_art.FREE_MODELS a painting costs nothing but its share of the framing check's one call a round, and a
+# third to half of them fail that check.
+PAINT_TRIES = 3
 
 
 def _met(term: str, limit: int) -> list[dict]:

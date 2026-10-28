@@ -47,8 +47,9 @@ ANKAHI = Brand(
     name="अनकही कथाएँ • Ankahi Kathayein (@ankahi.kathayein)",
     about=(
         "An Instagram, Facebook and YouTube page of lesser-known, sourced stories from the Ramayana, the Mahabharata "
-        "and the Bhagavata Purana, told in Hindi in one-minute Reels over old Pahari and Rajasthani paintings, for "
-        "Indian families. A pipeline writes, voices, pictures, judges and books three or four new Reels a day from a "
+        "and the Bhagavata Purana, told in Hindi in one-minute Reels over vivid, film-like paintings made for every "
+        "line (labelled as AI), for Indian families. A pipeline writes, voices, paints, judges and books three or four "
+        "new Reels a day from a "
         "backlog of stories; each Reel ends on its story's payoff. Instagram is the main platform (most views come "
         "from non-followers through the Reels feed); Facebook gets the same Reels, and YouTube one Short a day at "
         "most, the Reel that did best on Instagram."
@@ -72,8 +73,8 @@ ANKAHI = Brand(
         "No engagement bait: never ask viewers to comment, like, share, follow or tag to get something, and no "
         "questions for the comments.",
         "No clickbait a Reel doesn't pay off: the title and hook promise only what the story delivers.",
-        "Old Indian paintings only (public domain or open licence), no modern pictures, nudity or figures of "
-        "another faith; synthetic media is disclosed.",
+        "Every line's picture is a painting made for it in the look of the niche's most-watched Shorts (owner, 23 "
+        "Oct), disclosed as AI; nothing modern, no nudity, blood or figures of another faith.",
     ),
     brand_project=True,
     title="Ankahi Kathayein growth desk",
