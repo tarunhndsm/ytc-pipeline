@@ -541,6 +541,22 @@ class NeuronTests(unittest.TestCase):
         reel_factory._add_neurons(state, late, 5000)
         self.assertEqual(reel_factory._neurons_left(state, late), 0)
 
+    def test_a_painting_steps_notes_name_no_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "ak999_pictures.log"
+            log.write_text("\n".join((
+                "12:05:01 INFO ytc.reel_art: line 9: SDXL-Lightning painted nothing (HTTPSConnectionPool(host="
+                "'api.cloudflare.com', port=443): Max retries exceeded with url: /client/v4/accounts/abc123def/ai/run/x)",
+                "12:05:02 INFO ytc.other: something else",
+                "12:06:40 INFO ytc.llm: gemini-3-flash answered ak999 painted framing in 98s",
+                "12:06:41 INFO ytc.reel_pictures: line 9: ai:ak999-09-5 set aside (two faces)",
+                "12:06:42 INFO ytc.reel_art: painted lines [1, 4] of [1, 4, 9] (2 by the free models)")), encoding="utf-8")
+            found = reel_factory.notes(log)
+        self.assertEqual(len(found), 4)
+        self.assertNotIn("abc123def", "\n".join(found))
+        self.assertIn("/accounts/…/ai/run/x", found[0])
+        self.assertEqual(reel_factory.notes(Path("/nonexistent/ak999_pictures.log")), [])
+
     def test_only_a_week_of_days_is_kept(self) -> None:
         state: dict = {}
         start = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)

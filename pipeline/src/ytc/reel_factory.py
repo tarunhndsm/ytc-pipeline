@@ -84,6 +84,13 @@ WAITING_MAX = 3
 # How long the steps paint without reel_art's free models after one step's free paintings all failed
 # (reel_art.FREE_DOWN): klein alone then, while the day's neurons last, as before 28 Oct.
 FREE_WAIT = timedelta(hours=3)
+# The lines of a painting step's log that go to the job's output, with their times: the log stays on the CircleCI
+# machine, and on 28 Oct ak095's pictures took 22 minutes with nothing to say why. The project's output is public, so
+# the account's ID is taken out of any Cloudflare URL.
+NOTES = re.compile(r"painted lines|painting was flagged|painted nothing|no painting|Cloudflare refused|passed the "
+                   r"framing check|set aside \(|kept the paintings|answered .* in \d+s|rate-limited|overloaded|"
+                   r"keeps failing|free quota")
+NOTES_MAX = 40
 # Painted line by line (reel_art.CINEMATIC), a Reel takes about 15 paintings and the day's neurons paint two or three,
 # one of which may pass: Instagram had nothing booked from Tue 27 Oct. While one of the next three days has no Reel
 # booked and none is made for it, the next story is made the older way, museum pictures with a painting only where
@@ -370,6 +377,12 @@ def _run(command: list[str], log: Path, timeout: int) -> tuple[int, str]:
     return code, (f"timed out after {timeout // 60} min; " if code == -1 else "") + text[-2500:]
 
 
+def notes(log: Path) -> list[str]:
+    """The last NOTES_MAX lines of a step's log that NOTES picks, without the Cloudflare account's ID."""
+    found = [line for line in log.read_text(errors="replace").splitlines() if NOTES.search(line)] if log.exists() else []
+    return [re.sub(r"/accounts/[^/\s]+", "/accounts/…", line)[:240] for line in found[-NOTES_MAX:]]
+
+
 def _steps(reel: str, rescuing: bool = False) -> list[tuple[str, object, list[str], int]]:
     folder = reels.REELS / reel
     video = folder / f"{reel}.mp4"
@@ -448,6 +461,9 @@ def make(reel: str, state: dict, logs: Path, done: dict, until: datetime | None 
         print(f"{reel} {step}: exit {code} after {time.time() - started:.0f} s, {spent['calls']} model calls, "
               f"${spent['usd']:.3f} at paid prices" + (f", {spent['neurons']:.0f} neurons" if spent.get("neurons") else ""),
               flush=True)
+        if step in ("pictures", "rescue"):
+            for line in notes(logs / f"{reel}_{step}.log"):
+                print(f"    {line}", flush=True)
         if code == -1 and step == "render":
             # The encode writes the Reel's video in place, so a render stopped midway leaves a newer, broken one.
             (folder / f"{reel}.mp4").unlink(missing_ok=True)
