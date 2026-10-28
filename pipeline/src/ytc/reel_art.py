@@ -39,11 +39,16 @@ WIDTH, HEIGHT = 864, 1536
 # Not FLUX.1 [schnell]: it paints only 1,024 squares, which the picture step turns down (reel_pictures.MIN_HEIGHT).
 MODELS = {"@cf/black-forest-labs/flux-2-klein-4b": "FLUX.2 klein"}
 # Free while Workers AI has them in beta (cf-ai-neurons 0.00 on 28 Oct), and none of their paintings was flagged:
-# SDXL-Lightning painted WIDTH x HEIGHT in about 6 s, SDXL base in 13 to 23 s. Their text encoder (CLIP) reads only 77
-# tokens, so they get a shorter prompt (free_prompt) and a negative one. The factory turns them off (YTC_FREE_ART=0)
-# for a while after a step's free paintings all failed (FREE_DOWN).
+# SDXL-Lightning paints one in about 6 s, SDXL base in 13 to 23 s. Their text encoder (CLIP) reads only 77 tokens, so
+# they get a shorter prompt (free_prompt) and a negative one. The factory turns them off (YTC_FREE_ART=0) for a while
+# after a step's free paintings all failed (FREE_DOWN).
 FREE_MODELS = {"@cf/bytedance/stable-diffusion-xl-lightning": "SDXL-Lightning",
                "@cf/stabilityai/stable-diffusion-xl-base-1.0": "Stable Diffusion XL"}
+# About the megapixel SDXL was trained at. At WIDTH x HEIGHT they doubled and stacked figures and fused riders into
+# horses, which the framing check turns down; at this size far less (28 Oct: five lines it kept failing, three seeds
+# a model, and ak095's chariot showed in 4 of 6 paintings against none). It still fills the screen
+# (plates.COVER_MIN_HEIGHT, reel_pictures.MIN_HEIGHT).
+FREE_WIDTH, FREE_HEIGHT = 768, 1344
 # Every line of a Reel gets a painting of its own (owner, 23 Oct: apply every strategy that makes Reels go viral). The
 # 104 most-viewed Hindi mythology Shorts of 13 to 23 Oct are vivid, film-like paintings with close, emotional faces; ours,
 # crops of old miniatures with small figures and cards on a blurred ground, held viewers 12 to 16 seconds, and no Reel
@@ -207,7 +212,8 @@ def _run(model: str, text: str, seed: int) -> tuple[bytes, float]:
     """The picture and the neurons it cost."""
     url = f"https://api.cloudflare.com/client/v4/accounts/{os.environ['IG_CLOUDFLARE_ACCOUNT_ID']}/ai/run/{model}"
     headers = {"Authorization": f"Bearer {os.environ['IG_CLOUDFLARE_API_TOKEN']}"}
-    fields = {"prompt": text, "width": WIDTH, "height": HEIGHT, "seed": seed}
+    width, height = (FREE_WIDTH, FREE_HEIGHT) if model in FREE_MODELS else (WIDTH, HEIGHT)
+    fields = {"prompt": text, "width": width, "height": height, "seed": seed}
     price = 0.0 if model in FREE_MODELS else NEURONS_EACH
     if model in FREE_MODELS:
         response = requests.post(url, headers=headers, json=fields | {"negative_prompt": NEGATIVE}, timeout=180)

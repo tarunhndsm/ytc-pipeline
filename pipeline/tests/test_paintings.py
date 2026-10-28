@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -397,8 +398,16 @@ class FreePaintTests(_Painting):
             self.assertEqual(reel_art._run(LIGHTNING, "a painting", 5), (self.jpeg, 0.0))
         body = post.call_args.kwargs["json"]
         self.assertEqual((body["seed"], body["width"], body["height"], body["negative_prompt"]),
-                         (5, reel_art.WIDTH, reel_art.HEIGHT, reel_art.NEGATIVE))
+                         (5, reel_art.FREE_WIDTH, reel_art.FREE_HEIGHT, reel_art.NEGATIVE))
         self.assertIn("text", body["negative_prompt"])
+
+    def test_klein_is_sent_a_form_for_its_own_size(self) -> None:
+        answer = MagicMock(status_code=200, headers={"content-type": "application/json", "cf-ai-neurons": "131.88"})
+        answer.json.return_value = {"result": {"image": base64.b64encode(self.jpeg).decode()}}
+        with patch.object(reel_art.requests, "post", return_value=answer) as post:
+            self.assertEqual(reel_art._run(KLEIN, "a painting", 5), (self.jpeg, 131.88))
+        form = post.call_args.kwargs["files"]
+        self.assertEqual((form["width"], form["height"]), ((None, str(reel_art.WIDTH)), (None, str(reel_art.HEIGHT))))
 
     def test_a_free_models_429_is_its_rate_and_not_the_days_neurons(self) -> None:
         answer = MagicMock(status_code=429, text='{"errors": [{"message": "Capacity temporarily exceeded"}]}',
