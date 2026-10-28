@@ -421,10 +421,15 @@ def _gemini(spec: ShortSpec, out_dir: Path) -> Narration:
             try:
                 raw, served = _gemini_take(spoken, spec.voice, [served] if served and take > 1 else None)
             except RuntimeError as error:
-                if best is None:
+                if best is not None:
+                    log.warning("%s: no take %d (%s); keeping the best so far", spec.id, take, error)
+                    break
+                if not (served and take > 1):
                     raise
-                log.warning("%s: no take %d (%s); keeping the best so far", spec.id, take, error)
-                break
+                # With no take to keep, any model may read this one. On 29 Oct ak103's first two takes strayed, its
+                # model's 10 free requests a day ran out, and the render failed with the other models' quota left.
+                log.warning("%s: no take %d from %s (%s); the other models read it", spec.id, take, served, error)
+                raw, served = _gemini_take(spoken, spec.voice)
         played = _tighten(_tempo(raw, spec.voice.speed), spec.voice.max_pause)
         head, tail = _speech_bounds(played)
         audio = np.concatenate([np.zeros(int(lead_in * SAMPLE_RATE), dtype=np.float32), played[head:tail]])
