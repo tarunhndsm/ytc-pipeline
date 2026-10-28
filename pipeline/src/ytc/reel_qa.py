@@ -1,6 +1,7 @@
 """Look at a rendered Reel as a viewer will, and fix what the picture step got wrong before the judge sees it.
 
-A frame from the middle of each line goes to a vision model with the line's words and its picture's title. Captions
+A frame from the middle of each line goes to a Flash model with the line's words and its picture's title (with their
+quota spent, the Reel stays as the picture step made it). Captions
 it finds over a face move to another height, and a hook box over a face moves down. A picture it finds off the story,
 or too poor to make out, gives way to the line's next candidate from the picture step (work/spares.json), or to an
 earlier line's picture when none is left. Then the Reel is rendered again with the same narration, for up to ROUNDS
@@ -36,6 +37,11 @@ HEIGHTS = {"top": reel_pictures.CAPTION_MOVES[1], "middle": reel_pictures.CAPTIO
 HOOK_HIGH = 0.15
 PROBLEMS = ("none", "captions_on_face", "hook_on_face", "wrong_picture", "poor_picture")
 SWAPS = ("wrong_picture", "poor_picture")
+# Only Flash models look. Once their quota was spent the lite model looked, and it found captions over faces on 9 to
+# 13 lines in every look at ak100 to ak104 (28 Oct), on lines it had passed in the look before; of the 8 lines whose
+# captions it moved to the top in ak104, gemini-3.8-flash found 5 over a face afterwards. Flash's looks found 0 or 1
+# problem (ak087 to ak096). Without a Flash model the picture step's placement stands.
+LOOKERS = reel_writer.WRITERS
 
 CHECK_SCHEMA = {
     "type": "object",
@@ -99,8 +105,7 @@ def check(folder: Path) -> list[dict]:
             title = (beat.get("asset") or {}).get("title") or ""
             parts += [f"\nLine {number}: \"{beat['text']}\"" + (f" (picture: {title[:90]})" if title else ""), frame]
     with reel_writer.gemini_only():
-        answer = llm.generate(parts, schema=CHECK_SCHEMA, models=reel_writer.SCRIPT_MODELS,
-                              purpose=f"{manifest['id']} qa")
+        answer = llm.generate(parts, schema=CHECK_SCHEMA, models=LOOKERS, purpose=f"{manifest['id']} qa")
     found = {item["line"]: item for item in answer["lines"]}
     return [found.get(n) or {"line": n, "problem": "none", "detail": "", "captions_to": "middle"}
             for n in range(1, len(manifest["beats"]) + 1)]
@@ -226,9 +231,14 @@ def run(folder: Path, rounds: int = ROUNDS) -> dict:
     # Saved after each fix as well; "finished" tells the factory a run cut short before its last look isn't done.
     record: dict = {"rounds": [], "finished": False}
     for turn in range(rounds + 1):
-        problems = [p for p in check(folder) if p["problem"] != "none"]
-        entry = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "model": llm.answered_by(),
-                 "problems": problems}
+        at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            problems = [p for p in check(folder) if p["problem"] != "none"]
+        except llm.OutOfQuota as error:
+            log.info("%s: %s; the Reel stays as it is", folder.name, error)
+            record["rounds"].append({"at": at, "model": "", "problems": [], "skipped": str(error)[:200]})
+            break
+        entry = {"at": at, "model": llm.answered_by(), "problems": problems}
         record["rounds"].append(entry)
         record["left"] = problems
         if not problems or turn == rounds:
