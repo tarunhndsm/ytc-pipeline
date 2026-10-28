@@ -566,6 +566,21 @@ class NeuronTests(unittest.TestCase):
         self.assertIn("/accounts/…/ai/run/x", found[0])
         self.assertEqual(reel_factory.notes(Path("/nonexistent/ak999_pictures.log")), [])
 
+    def test_a_render_steps_notes_say_why_its_takes_were_turned_down(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "ak999_render.log"
+            log.write_text("\n".join((
+                "16:40:01 INFO ytc.tts: ak999 take 1 (gemini-3.8-flash-tts): Whisper heard 96% 0% 91% of each line; the "
+                "longest stretch not in the script is 31.2 s",
+                "16:40:01 WARNING ytc.tts: ak999: take 1 says things that aren't in the script at 0-31 s; not using it",
+                "16:40:02 INFO ytc.render: encoding 13 lines",
+                "16:41:10 INFO ytc.tts: gemini-3.8-flash-tts: HTTP 429 GenerateRequestsPerDay=10; Google asks for a None "
+                "s wait",
+                "16:41:11 WARNING ytc.tts: ak999: no take 2 (no Gemini TTS model read the script); keeping the best so "
+                "far")), encoding="utf-8")
+            found = reel_factory.notes(log)
+        self.assertEqual([line[:8] for line in found], ["16:40:01", "16:40:01", "16:41:10", "16:41:11"])
+
     def test_only_a_week_of_days_is_kept(self) -> None:
         state: dict = {}
         start = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
