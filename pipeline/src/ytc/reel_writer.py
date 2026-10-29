@@ -94,6 +94,10 @@ SCHEMA = {
     "properties": {
         "title": {"type": "string"},
         "hook_text": {"type": "string"},
+        "cast": {"type": "array", "items": {"type": "object", "properties": {
+            "name": {"type": "string"},
+            "look": {"type": "string"},
+        }, "required": ["name", "look"]}},
         "beats": {"type": "array", "items": {"type": "object", "properties": {
             "text": {"type": "string"},
             "emphasis": {"type": "string"},
@@ -114,17 +118,18 @@ SCHEMA = {
             "evidence": {"type": "string"},
         }, "required": ["question", "answer", "accepted", "evidence"]},
     },
-    "required": ["title", "hook_text", "beats", "summary", "teaser", "source_line", "tones", "hashtags", "tags",
-                 "quiz"],
+    "required": ["title", "hook_text", "cast", "beats", "summary", "teaser", "source_line", "tones", "hashtags",
+                 "tags", "quiz"],
 }
 
 
 def _schema() -> dict:
-    """The script's schema: SCHEMA, without the question for the viewers while the quiz is off."""
-    if QUIZ:
+    """The script's schema: SCHEMA, without the question for the viewers while the quiz is off, and without the cast
+    while the pictures come from the museums."""
+    if not (dropped := {k for k, on in (("quiz", QUIZ), ("cast", reel_art.CINEMATIC)) if not on}):
         return SCHEMA
-    return SCHEMA | {"properties": {k: v for k, v in SCHEMA["properties"].items() if k != "quiz"},
-                     "required": [k for k in SCHEMA["required"] if k != "quiz"]}
+    return SCHEMA | {"properties": {k: v for k, v in SCHEMA["properties"].items() if k not in dropped},
+                     "required": [k for k in SCHEMA["required"] if k not in dropped]}
 
 PROMPT = """You write Reels for अनकही कथाएँ (@ankahi.kathayein), an Instagram page of lesser-known, sourced stories
 from the Ramayana, the Mahabharata and the Puranas, told in Hindi to Indian families. A demanding editor scores every
@@ -222,17 +227,26 @@ MUSEUM_PICTURES = """The pictures (they are chosen later from what you write):
   painting's tradition (Bhagavata Purana, Pahari, Kangra, Kalighat). Never a museum's name or a bare word like
   "sage" or "sculpture"."""
 # The painter doesn't know the story's names: given only "Rukmi", "Kalayavana" or "Mucukunda" it painted a woman,
-# and the judge gave visuals 4 and 3 (ak098, ak100, 29 Oct).
+# and the judge gave visuals 4 and 3 (ak098, ak100, 29 Oct). Told to describe each figure the same way in every
+# picture, the writer described Aniruddha once and then wrote only "young prince Aniruddha", and the judge found him
+# a different person in almost every frame (ak108, 29 Oct), as with Shantanu and Shukadeva (ak104, ak106); so
+# with_looks adds the cast's looks.
 PAINTED_PICTURES = """The pictures (each line's is painted for it later, from what you write):
 - Every line gets a picture of its own, the last one too{reused}.
-- picture: in English, one frame of a film for this line, for the painter: who is in it, by name and what they are,
-  since the painter doesn't know the names (a man or a woman, a boy or a girl, their age if young, a king, a sage or
-  a demon: "Rukmi, a bearded young warrior prince"), what they do at this very moment, their expression and feeling,
-  where they are, the light, and how close we are (a close-up of a face for a feeling, wide for a vast sky, an army
-  or a palace). One moment, at most three figures, nothing modern and no writing. Name each figure in every picture
-  they are in, with the same words for what they are, never "he" or "the sage", so they look the same from line to
-  line. Line 1's picture is the first frame in the feed: the figure line 1 names, close up, with the strongest
-  feeling of the story (awe, fear, fury, shock), never a landscape on its own.
+- cast: everyone in more than one picture, so they are painted the same in each. name: as your pictures write it,
+  without a title ("Aniruddha", not "Prince Aniruddha"). look: 8 to 14 English words for how they look in every
+  picture: a man or a woman, a boy or a girl, their age, build and skin, hair and beard or none, crown or headdress,
+  and clothes with their colours ("a slim fair prince of about twenty, thin moustache, pearl crown, blue dhoti"); a
+  god as temple art shows them. Each look is added after the name in every picture that names them, so your
+  pictures give their names alone.
+- picture: in English, one frame of a film for this line, for the painter: who is in it, by name, and anyone not in
+  the cast with what they are, since the painter doesn't know the names (a man or a woman, a boy or a girl, their
+  age if young, a king, a sage or a demon: "Rukmi, a bearded young warrior prince"), what they do at this very
+  moment, their expression and feeling, where they are, the light, and how close we are (a close-up of a face for a
+  feeling, wide for a vast sky, an army or a palace). One moment, at most three figures, nothing modern and no
+  writing. Name each figure in every picture they are in, never "he" or "the sage". Line 1's picture is the first
+  frame in the feed: the figure line 1 names, close up, with the strongest feeling of the story (awe, fear, fury,
+  shock), never a landscape on its own.
 - Never in a picture: blood, a wound, a dead, cut or broken body, or parts of one. Show such a moment through the
   faces of those who see it, and what the text says is hidden as closed cloth bundles.
 - Name no style of art ("traditional", "classical", "miniature"): every picture is painted in one style later.
@@ -580,6 +594,34 @@ def _tidy(script: dict) -> dict:
     return script
 
 
+# A look's words that reach the painting: SDXL reads only 77 tokens of a prompt (reel_art.FREE_MODELS), and a picture
+# names up to three figures.
+LOOK_WORDS = 16
+# A title the writer puts before a cast member's name that the pictures leave out ("King Banasura", "Banasura").
+_TITLE = re.compile(r"^(?:(?:king|queen|prince|princess|lord|lady|sage|rishi|maharishi|goddess|god|devi|sri|shri)\s+)+",
+                    re.I)
+
+
+def with_looks(script: dict) -> dict:
+    """Each cast member's look after their name in every picture that names them, unless it is there already, so
+    every painting of them is made from the same words. Not after a possessive ("Aniruddha's portrait"), whose
+    picture may not show them."""
+    cast = {}
+    for member in script.get("cast") or []:
+        name = _TITLE.sub("", " ".join(str(member.get("name") or "").split()))
+        look = " ".join(str(member.get("look") or "").split()[:LOOK_WORDS]).strip(" ,.;")
+        if len(name) > 2 and look:
+            cast.setdefault(name.lower(), (re.compile(rf"\b{re.escape(name)}\b(?!['’]s\b)", re.I), look))
+    for beat in script["beats"]:
+        picture = beat.get("picture") or ""
+        found = [(match.end(), look) for pattern, look in cast.values()
+                 if look.lower() not in picture.lower() and (match := pattern.search(picture))]
+        for end, look in sorted(found, reverse=True):
+            picture = f"{picture[:end]} ({look}){picture[end:]}"
+        beat["picture"] = picture
+    return script
+
+
 def _invite(part: dict | None) -> str:
     if part and part["number"] < part["of"]:
         return INVITE_PART.format(next=NUMBER_WORDS.get(part["number"] + 1, str(part["number"] + 1)))
@@ -670,7 +712,7 @@ def write(row: dict, pages: list[dict], reel_id: str, before: tuple[Path, dict] 
                                         purpose=f"{reel_id} script fix"))
     if found := problems(script, pages):
         raise ValueError(f"{reel_id} script still breaks rules after {FIX_ROUNDS} rewrites: {' '.join(found)}")
-    return script
+    return with_looks(script)
 
 
 def chained(script: dict, before: tuple[Path, dict] | None, part: dict | None) -> dict:

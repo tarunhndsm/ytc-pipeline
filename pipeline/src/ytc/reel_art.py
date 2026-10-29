@@ -108,9 +108,13 @@ FREE_FIRST = "dramatic close-up, the face fills the frame. " if CINEMATIC else "
 # FLUX painted Krishna pale and Yama as a sage (ak072, 20 Oct). Only for a brief that names them: said of every line,
 # the sages filled every painting with a crowd of them (ak065).
 ICONS = (
-    (r"\b(sage|rishi|muni|ascetic|hermit|yogi|sadhu|maharishi|maharshi)s?\b|\bhermitage\b",
-     "sages and ascetics have matted hair, beards, rudraksha beads and plain saffron or bark-cloth garments, never a "
-     "crown or jewels"),
+    # Not said of the sages' wives or daughters: for "six chaste Rishi wives" it painted only bearded sages round the
+    # fire (ak109, 29 Oct). No beard either: the young ones (Shukadeva at sixteen, the Kumaras) have none, and the
+    # brief or the cast's look gives a sage's age.
+    (r"\b(sage|rishi|muni|ascetic|hermit|yogi|sadhu|maharishi|maharshi)s?\b(?!['’]s\b|['’]?[\s-]+(?:wi(?:fe|ves)|"
+     r"patnis?|daughters?|wom[ae]n|girls?)\b)|\bhermitage\b",
+     "sages and ascetics have matted hair, rudraksha beads and plain saffron or bark-cloth garments, never a crown or "
+     "jewels"),
     # Their clothes are named: a bare blue torso got all four of ak073's paintings of Rama flagged (21 Oct).
     (r"\bkrishna\b", "Krishna has blue skin, a peacock feather in his crown, a yellow dhoti and a scarf over his "
                      "shoulders"),
@@ -128,7 +132,9 @@ ICONS = (
     (r"\bganesh(a)?\b|\bganapati\b", "Ganesha has an elephant's head"),
     (r"\byama(raja?)?\b", "Yama, god of death, is dark-skinned and crowned, with a mace and a noose"),
     (r"\bbrahma\b", "Brahma has four bearded heads"),
-    (r"\bindra\b", "Indra is crowned and rides the white elephant Airavata"),
+    # Not his elephant: said of a brief where Indra bows to the child Kartikeya, it stacked elephant heads where
+    # Kartikeya should be, and the judge gave visuals 4 and 5 (ak109, 29 Oct).
+    (r"\bindra\b", "Indra is crowned, in golden armour and jewels, and holds a thunderbolt"),
     (r"\bdurga\b", "Durga rides a lion and holds weapons in many arms"),
     (r"\blakshmi\b", "Lakshmi sits on a lotus"),
     (r"\bsaraswati\b", "Saraswati holds a veena, a white swan beside her"),

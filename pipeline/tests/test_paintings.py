@@ -306,6 +306,17 @@ class PaintTests(_Painting):
         for name in ("Hanuman", "Hanumanji", "Bajrangbali", "Anjaneya"):
             self.assertIn("monkey's face with golden-orange fur, a long tail", reel_art.icons(f"{name} leaps to Lanka"))
 
+    def test_the_sages_look_is_not_given_to_their_wives_and_indra_comes_without_his_elephant(self) -> None:
+        sages = "matted hair, rudraksha beads"
+        for brief in ("Agni gazes at six chaste Rishi wives by the fire", "the sage's daughter Shakuntala at the river",
+                      "the rishis' wives walk into the forest", "Swaha disguised as a rishi-patni"):
+            self.assertNotIn(sages, reel_art.icons(brief), brief)
+        for brief in ("Sage Viswamitra raises his hand", "six stern Rishis turn their backs", "a quiet forest hermitage",
+                      "six bearded Rishis point at six chaste Rishi wives"):
+            self.assertIn(sages, reel_art.icons(brief), brief)
+        self.assertNotIn("beard", reel_art.icons("Shukadeva, a radiant young sage of sixteen"))
+        self.assertNotIn("elephant", reel_art.icons("Child Kartikeya holds a spear while King Indra and Agni bow"))
+
     def test_line_1_asks_for_a_close_vivid_figure_and_every_line_for_the_style(self) -> None:
         first, other = (reel_art.prompt({"picture": "Kunti at the river."}, n == 1) for n in (1, 2))
         self.assertTrue(first.startswith("Kunti at the river. " + reel_art.FIRST))
