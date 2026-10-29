@@ -221,14 +221,18 @@ MUSEUM_PICTURES = """The pictures (they are chosen later from what you write):
   Garuda, Ashtavakra), since a painting of this very story may exist; then the scene (Janaka court) or the
   painting's tradition (Bhagavata Purana, Pahari, Kangra, Kalighat). Never a museum's name or a bare word like
   "sage" or "sculpture"."""
+# The painter doesn't know the story's names: given only "Rukmi", "Kalayavana" or "Mucukunda" it painted a woman,
+# and the judge gave visuals 4 and 3 (ak098, ak100, 29 Oct).
 PAINTED_PICTURES = """The pictures (each line's is painted for it later, from what you write):
 - Every line gets a picture of its own, the last one too{reused}.
-- picture: in English, one frame of a film for this line, for the painter: who is in it, by name (and their age if
-  young), what they do at this very moment, their expression and feeling, where they are, the light, and how close
-  we are (a close-up of a face for a feeling, wide for a vast sky, an army or a palace). One moment, at most three
-  figures, nothing modern and no writing. Name each figure in every picture they are in, never "he" or "the sage",
-  so they look the same from line to line. Line 1's picture is the first frame in the feed: the figure line 1 names,
-  close up, with the strongest feeling of the story (awe, fear, fury, shock), never a landscape on its own.
+- picture: in English, one frame of a film for this line, for the painter: who is in it, by name and what they are,
+  since the painter doesn't know the names (a man or a woman, a boy or a girl, their age if young, a king, a sage or
+  a demon: "Rukmi, a bearded young warrior prince"), what they do at this very moment, their expression and feeling,
+  where they are, the light, and how close we are (a close-up of a face for a feeling, wide for a vast sky, an army
+  or a palace). One moment, at most three figures, nothing modern and no writing. Name each figure in every picture
+  they are in, with the same words for what they are, never "he" or "the sage", so they look the same from line to
+  line. Line 1's picture is the first frame in the feed: the figure line 1 names, close up, with the strongest
+  feeling of the story (awe, fear, fury, shock), never a landscape on its own.
 - Never in a picture: blood, a wound, a dead, cut or broken body, or parts of one. Show such a moment through the
   faces of those who see it, and what the text says is hidden as closed cloth bundles.
 - Name no style of art ("traditional", "classical", "miniature"): every picture is painted in one style later.
