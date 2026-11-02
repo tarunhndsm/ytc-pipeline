@@ -40,6 +40,11 @@ _DATE_FIRST = re.compile(
     re.I)
 _OVERRIDE = re.compile(r"\[([^\]]+)\]\(/[^)]*/\)")
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF]")
+# A place and time as the on-screen hook ("SALEM, 1692", "BAY OF NAPLES, 79 AD", "NEW JERSEY, TODAY"): over 50 Shorts
+# to 1 Nov 2026, a median 47% of viewers stayed to watch the 38 with a dateline over beat 1, 56% the 12 without.
+_DATELINE = re.compile(
+    r"\b(?:1\d{3}|20[0-2]\d)s?\b|\b\d{1,4}\s?(?:AD|BC|BCE|CE)\b|,\s*(?:TODAY|NOW)\b|"
+    r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d", re.I)
 
 SCRIPT_SCHEMA = {
     "type": "object",
@@ -146,8 +151,9 @@ Write the episode:
   "20,000 emus"; small: a few words explaining it), or "quote" (big: words quoted in the claims, exactly; small:
   who said or wrote them). Use only that beat's text and claims. Use kind "none", with big and small empty, when
   the beat has no date, number, or quote worth a card.
-- hook_text: 2 to 5 words in giant letters over beat 1 that add to the spoken hook without repeating it or
-  giving away the payoff: the place and year, a number, or the stakes ("AUSTRALIA, 1932").
+- hook_text: 2 to 5 words in giant letters over beat 1 that add tension to the spoken hook without repeating it
+  or giving away the payoff: a number, the stakes, or the contradiction ("$20M JUNGLE CITY", "33,000 FOOT FALL",
+  "NOT MADE OF WOOD"). Never a place and year ("SALEM, 1692"): datelines held fewer viewers.
 - title, description, hashtags, tags: per the metadata rules. The first hashtag is #history.
 - better_than_last: one sentence naming the learning or improvement this episode applies, and where.
 """
@@ -225,7 +231,8 @@ def _card_ok(card: dict, beat: dict, research: dict) -> bool:
 
 def normalize(script: dict, research: dict | None = None) -> dict:
     """Fix the mechanical slips (hashtag case, stray emphasis, too many sound effects or tags, a long
-    description, missing picture searches, a card or on-screen hook that breaks the rules) without another call."""
+    description, missing picture searches, a card or on-screen hook that breaks the rules, a dateline as the
+    on-screen hook) without another call."""
     tags = [re.sub(r"[^a-z0-9]", "", t.lower()) for t in script.get("hashtags", [])]
     tags = list(dict.fromkeys(["history"] + [t for t in tags if t and t != "history"]))
     if len(tags) >= 3:
@@ -263,6 +270,9 @@ def normalize(script: dict, research: dict | None = None) -> dict:
     hook = set(_plain_words(script["beats"][0]["text"])) if script.get("beats") else set()
     words = _plain_words(hook_text)
     if not 2 <= len(words) <= 6 or len(hook_text) > 40 or _EMOJI.search(hook_text) or sum(w in hook for w in words) > 0.7 * len(words):
+        hook_text = ""
+    elif _DATELINE.search(hook_text):
+        log.info("dropping a dateline as the on-screen hook: %s", hook_text)
         hook_text = ""
     script["hook_text"] = hook_text
     return script
